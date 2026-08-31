@@ -1,6 +1,3 @@
-
-
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -20,7 +17,25 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Helper: Generate a valid 75-Ball Bingo Card (5x5 grid with FREE space at center)
+async function initDB() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        telegram_id BIGINT PRIMARY KEY,
+        username VARCHAR(100),
+        balance NUMERIC(10, 2) DEFAULT 0.00,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log("🐘 PostgreSQL connected successfully!");
+  } catch (err) {
+    console.error("❌ Database connection error:", err);
+  }
+}
+
+initDB();
+
+// Helper: Generate a valid 75-Ball Bingo Card
 function generateBingoCard() {
   const getRandomNumbers = (min, max, count) => {
     const nums = new Set();
@@ -32,7 +47,7 @@ function generateBingoCard() {
 
   const b = getRandomNumbers(1, 15, 5);
   const i = getRandomNumbers(16, 30, 5);
-  const n = getRandomNumbers(31, 45, 4); // 4 numbers, center is FREE (0)
+  const n = getRandomNumbers(31, 45, 4);
   const g = getRandomNumbers(46, 60, 5);
   const o = getRandomNumbers(61, 75, 5);
 
@@ -41,7 +56,7 @@ function generateBingoCard() {
     const row = [
       b[r],
       i[r],
-      r === 2 ? 0 : (r > 2 ? n[r - 1] : n[r]), // Center free space (0)
+      r === 2 ? 0 : (r > 2 ? n[r - 1] : n[r]),
       g[r],
       o[r]
     ];
@@ -50,31 +65,63 @@ function generateBingoCard() {
   return card;
 }
 
-// Store 75 pre-generated cartelas
+// 75 Cartelas setup
 const cartelas = {};
 for (let id = 1; id <= 75; id++) {
   cartelas[id] = generateBingoCard();
 }
 
-console.log("🎫 75 cartelas created.");
-
-// Game State
-let takenCartelas = {}; // socketId -> cartelaNumber
+// Game State & Timer
+let takenCartelas = {}; 
 let drawnNumbers = [];
-let gameRunning = false;
+let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
+let gameInterval = null;
+
+function getLetterPrefix(num) {
+  if (num <= 15) return "B " + num;
+  if (num <= 30) return "I " + num;
+  if (num <= 45) return "N " + num;
+  if (num <= 60) return "G " + num;
+  return "O " + num;
+}
+
+function startAutoCaller() {
+  if (gameInterval) clearInterval(gameInterval);
+
+  gameInterval = setInterval(() => {
+    if (availableBalls.length === 0) {
+      clearInterval(gameInterval);
+      io.emit('game_finished');
+      return;
+    }
+
+    // Pick random ball
+    const randomIndex = Math.floor(Math.random() * availableBalls.length);
+    const num = availableBalls.splice(randomIndex, 1)[0];
+    drawnNumbers.push(num);
+
+    const formattedDisplay = getLetterPrefix(num);
+
+    // Broadcast number to all players in real time
+    io.emit('number_drawn', {
+      number: num,
+      display: formattedDisplay
+    });
+
+    console.log(`🎱 Drawn: ${formattedDisplay}`);
+  }, 4000); // Draws a new number every 4 seconds
+}
 
 // Socket Connections
 io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
 
-  // Send available cartela numbers
   const available = Object.keys(cartelas)
     .map(Number)
     .filter(id => !Object.values(takenCartelas).includes(id));
   
   socket.emit('cartela_list', { cartelas: available });
 
-  // Player selects a cartela
   socket.on('select_cartela', (number) => {
     if (Object.values(takenCartelas).includes(number)) {
       socket.emit('cartela_error', { message: 'Cartela already taken!' });
@@ -82,11 +129,8 @@ io.on('connection', (socket) => {
     }
 
     takenCartelas[socket.id] = number;
-    const playerCard = cartelas[number];
+    socket.emit('cartela_selected', { number: number, card: cartelas[number] });
 
-    socket.emit('cartela_selected', { number: number, card: playerCard });
-
-    // Broadcast updated available list to everyone
     const updatedAvailable = Object.keys(cartelas)
       .map(Number)
       .filter(id => !Object.values(takenCartelas).includes(id));
@@ -94,27 +138,25 @@ io.on('connection', (socket) => {
     io.emit('cartela_availability', { available: updatedAvailable });
   });
 
-  // Admin Start Game
+  // Admin Start Game Trigger
   socket.on('admin_start_game', () => {
-    gameRunning = true;
     drawnNumbers = [];
+    availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
     io.emit('game_started');
-    socket.emit('admin_success', { message: 'Game Started!' });
+    startAutoCaller();
+    socket.emit('admin_success', { message: 'Game & Auto-Caller Started!' });
   });
 
-  // Handle Player Claiming Bingo
   socket.on('claim_bingo', () => {
-    const playerCartelaNum = takenCartelas[socket.id];
-    if (!playerCartelaNum) {
+    if (!takenCartelas[socket.id]) {
       socket.emit('false_alarm', { message: 'You have not selected a cartela!' });
       return;
     }
-
-    // Broadcast win
+    
+    if (gameInterval) clearInterval(gameInterval);
     io.emit('game_over', { winner: socket.id, fullCard: false });
   });
 
-  // Player request cartelas view again
   socket.on('request_cartelas', () => {
     delete takenCartelas[socket.id];
     const avail = Object.keys(cartelas)
@@ -130,7 +172,7 @@ io.on('connection', (socket) => {
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: "online", game: gameRunning ? "active" : "waiting" });
+  res.json({ status: "online", drawnCount: drawnNumbers.length });
 });
 
 server.listen(port, () => {
