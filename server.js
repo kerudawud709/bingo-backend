@@ -11,7 +11,7 @@ const io = new Server(server, {
 
 const port = process.env.PORT || 10000;
 
-// Database Connection
+// PostgreSQL Pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
@@ -23,19 +23,26 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS users (
         telegram_id BIGINT PRIMARY KEY,
         username VARCHAR(100),
-        balance NUMERIC(10, 2) DEFAULT 0.00,
+        balance NUMERIC(10, 2) DEFAULT 100.00,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS game_history (
+        id SERIAL PRIMARY KEY,
+        winner_id BIGINT,
+        prize_amount NUMERIC(10, 2),
+        won_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
-    console.log("🐘 PostgreSQL connected successfully!");
+    console.log("🐘 Database initialized successfully!");
   } catch (err) {
-    console.error("❌ Database connection error:", err);
+    console.error("❌ Database initialization error:", err);
   }
 }
 
 initDB();
 
-// Generate a valid 75-Ball Bingo Card
+// 75-Ball Card Generator
 function generateBingoCard() {
   const getRandomNumbers = (min, max, count) => {
     const nums = new Set();
@@ -53,14 +60,13 @@ function generateBingoCard() {
 
   const card = [];
   for (let r = 0; r < 5; r++) {
-    const row = [
+    card.push([
       b[r],
       i[r],
       r === 2 ? 0 : (r > 2 ? n[r - 1] : n[r]),
       g[r],
       o[r]
-    ];
-    card.push(row);
+    ]);
   }
   return card;
 }
@@ -70,10 +76,12 @@ for (let id = 1; id <= 75; id++) {
   cartelas[id] = generateBingoCard();
 }
 
-let takenCartelas = {}; 
+let takenCartelas = {}; // socketId -> { number, userId }
+let playerSockets = {}; // userId -> socketId
 let drawnNumbers = [];
 let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
 let gameInterval = null;
+const ENTRY_FEE = 10.00;
 
 function getLetterPrefix(num) {
   if (num <= 15) return "B " + num;
@@ -87,18 +95,15 @@ function isMarked(num) {
   return num === 0 || drawnNumbers.includes(num);
 }
 
-// Custom Bingo Rule Verification
 function verifyBingo(card) {
   let horizontalCount = 0;
   let verticalCount = 0;
   let diagonalCount = 0;
 
-  // 1. Check Horizontal Rows
   for (let r = 0; r < 5; r++) {
     if (card[r].every(isMarked)) horizontalCount++;
   }
 
-  // 2. Check Vertical Columns
   for (let c = 0; c < 5; c++) {
     let colComplete = true;
     for (let r = 0; r < 5; r++) {
@@ -110,42 +115,24 @@ function verifyBingo(card) {
     if (colComplete) verticalCount++;
   }
 
-  // 3. Check Diagonals
-  const diag1 = [0, 1, 2, 3, 4].every(i => isMarked(card[i][i]));
-  const diag2 = [0, 1, 2, 3, 4].every(i => isMarked(card[i][4 - i]));
-  if (diag1) diagonalCount++;
-  if (diag2) diagonalCount++;
+  if ([0, 1, 2, 3, 4].every(i => isMarked(card[i][i]))) diagonalCount++;
+  if ([0, 1, 2, 3, 4].every(i => isMarked(card[i][4 - i]))) diagonalCount++;
 
-  // 4. Check Four Corners
-  const cornersFilled = isMarked(card[0][0]) && 
-                        isMarked(card[0][4]) && 
-                        isMarked(card[4][0]) && 
-                        isMarked(card[4][4]);
-
-  // Total lines (Horizontal + Vertical + Diagonal)
+  const cornersFilled = isMarked(card[0][0]) && isMarked(card[0][4]) && isMarked(card[4][0]) && isMarked(card[4][4]);
   const totalLines = horizontalCount + verticalCount + diagonalCount;
 
-  // 5. Check Full Cartela (Blackout)
   let totalMarked = 0;
   for (let r = 0; r < 5; r++) {
     for (let c = 0; c < 5; c++) {
       if (isMarked(card[r][c])) totalMarked++;
     }
   }
-  const isFullCard = totalMarked === 25;
 
-  // WIN CONDITIONS:
-  // - 2 Lines (any combination: 2 Horizontal, 2 Vertical, 1 Horiz + 1 Vert, 1 Line + 1 Diag)
-  // - 1 Horizontal Line + 4 Corners
-  // - 1 Vertical Line + 4 Corners
-  // - 1 Diagonal Line + 4 Corners
-  // - Full Cartela
+  const isFullCard = totalMarked === 25;
   const hasTwoLines = totalLines >= 2;
   const hasLineAndCorners = cornersFilled && (horizontalCount >= 1 || verticalCount >= 1 || diagonalCount >= 1);
 
-  const isValidWin = hasTwoLines || hasLineAndCorners || isFullCard;
-
-  return { valid: isValidWin, fullCard: isFullCard };
+  return { valid: hasTwoLines || hasLineAndCorners || isFullCard, fullCard: isFullCard };
 }
 
 function startAutoCaller() {
@@ -162,41 +149,72 @@ function startAutoCaller() {
     const num = availableBalls.splice(randomIndex, 1)[0];
     drawnNumbers.push(num);
 
-    const formattedDisplay = getLetterPrefix(num);
-
     io.emit('number_drawn', {
       number: num,
-      display: formattedDisplay
+      display: getLetterPrefix(num)
     });
-
-    console.log(`🎱 Drawn: ${formattedDisplay}`);
   }, 4000);
 }
 
-// Socket Connections
+// Socket handling with DB integration
 io.on('connection', (socket) => {
-  console.log('⚡ User connected:', socket.id);
 
-  const available = Object.keys(cartelas)
+  // Auth & Sync DB Balance
+  socket.on('authenticate', async (telegramId) => {
+    try {
+      let res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
+      if (res.rows.length === 0) {
+        res = await pool.query(
+          'INSERT INTO users (telegram_id, balance) VALUES ($1, $2) RETURNING *',
+          [telegramId, 100.00]
+        );
+      }
+      playerSockets[telegramId] = socket.id;
+      socket.telegramId = telegramId;
+      socket.emit('account_data', res.rows[0]);
+    } catch (err) {
+      console.error("Auth error:", err);
+    }
+  });
+
+  const getAvailableCartelas = () => Object.keys(cartelas)
     .map(Number)
-    .filter(id => !Object.values(takenCartelas).includes(id));
-  
-  socket.emit('cartela_list', { cartelas: available });
+    .filter(id => !Object.values(takenCartelas).some(item => item.number === id));
 
-  socket.on('select_cartela', (number) => {
-    if (Object.values(takenCartelas).includes(number)) {
+  socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
+
+  // Select Cartela & Deduct Entry Fee
+  socket.on('select_cartela', async (number) => {
+    const isTaken = Object.values(takenCartelas).some(item => item.number === number);
+    if (isTaken) {
       socket.emit('cartela_error', { message: 'Cartela already taken!' });
       return;
     }
 
-    takenCartelas[socket.id] = number;
-    socket.emit('cartela_selected', { number: number, card: cartelas[number] });
+    if (socket.telegramId) {
+      try {
+        const userRes = await pool.query('SELECT balance FROM users WHERE telegram_id = $1', [socket.telegramId]);
+        const currentBalance = parseFloat(userRes.rows[0]?.balance || 0);
 
-    const updatedAvailable = Object.keys(cartelas)
-      .map(Number)
-      .filter(id => !Object.values(takenCartelas).includes(id));
-    
-    io.emit('cartela_availability', { available: updatedAvailable });
+        if (currentBalance < ENTRY_FEE) {
+          socket.emit('cartela_error', { message: 'Insufficient balance!' });
+          return;
+        }
+
+        const updatedUser = await pool.query(
+          'UPDATE users SET balance = balance - $1 WHERE telegram_id = $2 RETURNING balance',
+          [ENTRY_FEE, socket.telegramId]
+        );
+
+        socket.emit('balance_updated', { balance: updatedUser.rows[0].balance });
+      } catch (err) {
+        console.error("Deduction error:", err);
+      }
+    }
+
+    takenCartelas[socket.id] = { number, userId: socket.telegramId };
+    socket.emit('cartela_selected', { number: number, card: cartelas[number] });
+    io.emit('cartela_availability', { available: getAvailableCartelas() });
   });
 
   socket.on('admin_start_game', () => {
@@ -207,44 +225,53 @@ io.on('connection', (socket) => {
     socket.emit('admin_success', { message: 'Game Started!' });
   });
 
-  socket.on('claim_bingo', () => {
-    const playerCartelaNum = takenCartelas[socket.id];
-    if (!playerCartelaNum) {
+  // Claim Bingo & Credit Winner
+  socket.on('claim_bingo', async () => {
+    const playerSelection = takenCartelas[socket.id];
+    if (!playerSelection) {
       socket.emit('false_alarm', { message: 'You have not selected a cartela!' });
       return;
     }
 
-    const playerCard = cartelas[playerCartelaNum];
+    const playerCard = cartelas[playerSelection.number];
     const result = verifyBingo(playerCard);
 
     if (result.valid) {
       if (gameInterval) clearInterval(gameInterval);
-      io.emit('game_over', { winner: socket.id, fullCard: result.fullCard });
-      console.log(`🏆 Valid Bingo by ${socket.id}!`);
+
+      const totalPlayers = Object.keys(takenCartelas).length;
+      const prizePool = totalPlayers * ENTRY_FEE;
+
+      if (socket.telegramId) {
+        try {
+          await pool.query('UPDATE users SET balance = balance + $1 WHERE telegram_id = $2', [prizePool, socket.telegramId]);
+          await pool.query('INSERT INTO game_history (winner_id, prize_amount) VALUES ($1, $2)', [socket.telegramId, prizePool]);
+        } catch (err) {
+          console.error("Prize payout error:", err);
+        }
+      }
+
+      io.emit('game_over', { winner: socket.id, prize: prizePool, fullCard: result.fullCard });
     } else {
       socket.emit('false_alarm', { 
-        message: 'False Bingo! Valid win combinations:\n- Any 2 complete lines\n- Any 1 line + 4 corners\n- Full cartela' 
+        message: 'False Bingo! Rules:\n- 2 complete lines\n- 1 line + 4 corners\n- Full cartela' 
       });
-      console.log(`⚠️ False Bingo attempt by ${socket.id}`);
     }
   });
 
   socket.on('request_cartelas', () => {
     delete takenCartelas[socket.id];
-    const avail = Object.keys(cartelas)
-      .map(Number)
-      .filter(id => !Object.values(takenCartelas).includes(id));
-    socket.emit('cartela_list', { cartelas: avail });
+    socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
   });
 
   socket.on('disconnect', () => {
     delete takenCartelas[socket.id];
-    console.log('❌ User disconnected:', socket.id);
+    if (socket.telegramId) delete playerSockets[socket.telegramId];
   });
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: "online", drawnCount: drawnNumbers.length });
+  res.json({ status: "online", activePlayers: Object.keys(takenCartelas).length });
 });
 
 server.listen(port, () => {
