@@ -35,7 +35,7 @@ async function initDB() {
 
 initDB();
 
-// Helper: Generate a valid 75-Ball Bingo Card
+// Generate a valid 75-Ball Bingo Card
 function generateBingoCard() {
   const getRandomNumbers = (min, max, count) => {
     const nums = new Set();
@@ -65,13 +65,11 @@ function generateBingoCard() {
   return card;
 }
 
-// 75 Cartelas setup
 const cartelas = {};
 for (let id = 1; id <= 75; id++) {
   cartelas[id] = generateBingoCard();
 }
 
-// Game State & Timer
 let takenCartelas = {}; 
 let drawnNumbers = [];
 let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
@@ -85,6 +83,71 @@ function getLetterPrefix(num) {
   return "O " + num;
 }
 
+function isMarked(num) {
+  return num === 0 || drawnNumbers.includes(num);
+}
+
+// Custom Bingo Rule Verification
+function verifyBingo(card) {
+  let horizontalCount = 0;
+  let verticalCount = 0;
+  let diagonalCount = 0;
+
+  // 1. Check Horizontal Rows
+  for (let r = 0; r < 5; r++) {
+    if (card[r].every(isMarked)) horizontalCount++;
+  }
+
+  // 2. Check Vertical Columns
+  for (let c = 0; c < 5; c++) {
+    let colComplete = true;
+    for (let r = 0; r < 5; r++) {
+      if (!isMarked(card[r][c])) {
+        colComplete = false;
+        break;
+      }
+    }
+    if (colComplete) verticalCount++;
+  }
+
+  // 3. Check Diagonals
+  const diag1 = [0, 1, 2, 3, 4].every(i => isMarked(card[i][i]));
+  const diag2 = [0, 1, 2, 3, 4].every(i => isMarked(card[i][4 - i]));
+  if (diag1) diagonalCount++;
+  if (diag2) diagonalCount++;
+
+  // 4. Check Four Corners
+  const cornersFilled = isMarked(card[0][0]) && 
+                        isMarked(card[0][4]) && 
+                        isMarked(card[4][0]) && 
+                        isMarked(card[4][4]);
+
+  // Total lines (Horizontal + Vertical + Diagonal)
+  const totalLines = horizontalCount + verticalCount + diagonalCount;
+
+  // 5. Check Full Cartela (Blackout)
+  let totalMarked = 0;
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      if (isMarked(card[r][c])) totalMarked++;
+    }
+  }
+  const isFullCard = totalMarked === 25;
+
+  // WIN CONDITIONS:
+  // - 2 Lines (any combination: 2 Horizontal, 2 Vertical, 1 Horiz + 1 Vert, 1 Line + 1 Diag)
+  // - 1 Horizontal Line + 4 Corners
+  // - 1 Vertical Line + 4 Corners
+  // - 1 Diagonal Line + 4 Corners
+  // - Full Cartela
+  const hasTwoLines = totalLines >= 2;
+  const hasLineAndCorners = cornersFilled && (horizontalCount >= 1 || verticalCount >= 1 || diagonalCount >= 1);
+
+  const isValidWin = hasTwoLines || hasLineAndCorners || isFullCard;
+
+  return { valid: isValidWin, fullCard: isFullCard };
+}
+
 function startAutoCaller() {
   if (gameInterval) clearInterval(gameInterval);
 
@@ -95,21 +158,19 @@ function startAutoCaller() {
       return;
     }
 
-    // Pick random ball
     const randomIndex = Math.floor(Math.random() * availableBalls.length);
     const num = availableBalls.splice(randomIndex, 1)[0];
     drawnNumbers.push(num);
 
     const formattedDisplay = getLetterPrefix(num);
 
-    // Broadcast number to all players in real time
     io.emit('number_drawn', {
       number: num,
       display: formattedDisplay
     });
 
     console.log(`🎱 Drawn: ${formattedDisplay}`);
-  }, 4000); // Draws a new number every 4 seconds
+  }, 4000);
 }
 
 // Socket Connections
@@ -138,23 +199,34 @@ io.on('connection', (socket) => {
     io.emit('cartela_availability', { available: updatedAvailable });
   });
 
-  // Admin Start Game Trigger
   socket.on('admin_start_game', () => {
     drawnNumbers = [];
     availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
     io.emit('game_started');
     startAutoCaller();
-    socket.emit('admin_success', { message: 'Game & Auto-Caller Started!' });
+    socket.emit('admin_success', { message: 'Game Started!' });
   });
 
   socket.on('claim_bingo', () => {
-    if (!takenCartelas[socket.id]) {
+    const playerCartelaNum = takenCartelas[socket.id];
+    if (!playerCartelaNum) {
       socket.emit('false_alarm', { message: 'You have not selected a cartela!' });
       return;
     }
-    
-    if (gameInterval) clearInterval(gameInterval);
-    io.emit('game_over', { winner: socket.id, fullCard: false });
+
+    const playerCard = cartelas[playerCartelaNum];
+    const result = verifyBingo(playerCard);
+
+    if (result.valid) {
+      if (gameInterval) clearInterval(gameInterval);
+      io.emit('game_over', { winner: socket.id, fullCard: result.fullCard });
+      console.log(`🏆 Valid Bingo by ${socket.id}!`);
+    } else {
+      socket.emit('false_alarm', { 
+        message: 'False Bingo! Valid win combinations:\n- Any 2 complete lines\n- Any 1 line + 4 corners\n- Full cartela' 
+      });
+      console.log(`⚠️ False Bingo attempt by ${socket.id}`);
+    }
   });
 
   socket.on('request_cartelas', () => {
