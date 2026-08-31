@@ -1,16 +1,25 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const { Pool } = require('pg');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
 const port = process.env.PORT || 3000;
 
-// Setup PostgreSQL pool using Render's DATABASE_URL
+// Setup Database Connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Create tables on start
 async function initDB() {
   try {
     await pool.query(`
@@ -29,11 +38,25 @@ async function initDB() {
 
 initDB();
 
+// HTTP Fallback Route
 app.get('/', (req, res) => {
-  res.send('Bingo backend is live!');
+  res.json({ status: "online", message: "Yeketema Bingo WebSocket server is running" });
 });
 
-app.listen(port, () => {
+// Socket.IO Real-time Connections
+io.on('connection', (socket) => {
+  console.log('⚡ User connected:', socket.id);
+
+  // Send sample available cartelas (1 to 75)
+  socket.emit('cartela_list', {
+    cartelas: Array.from({ length: 75 }, (_, i) => i + 1)
+  });
+
+  socket.on('disconnect', () => {
+    console.log('❌ User disconnected:', socket.id);
+  });
+});
+
+server.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
-
