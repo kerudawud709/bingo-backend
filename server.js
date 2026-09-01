@@ -11,7 +11,9 @@ const io = new Server(server, {
 
 const port = process.env.PORT || 10000;
 
-// PostgreSQL Pool Connection
+// Set your Admin Telegram ID here (Replace with your actual Telegram User ID)
+const ADMIN_TELEGRAM_ID = 12345678; 
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
@@ -37,13 +39,12 @@ async function initDB() {
     `);
     console.log("🐘 Database initialized successfully!");
   } catch (err) {
-    console.error("❌ Database initialization error:", err);
+    console.error("❌ Database error:", err);
   }
 }
 
 initDB();
 
-// 75-Ball Card Generator
 function generateBingoCard() {
   const getRandomNumbers = (min, max, count) => {
     const nums = new Set();
@@ -157,7 +158,6 @@ function startAutoCaller() {
   }, 4000);
 }
 
-// Socket connections with Leaderboard & Win Updates
 io.on('connection', (socket) => {
 
   socket.on('authenticate', async (telegramId) => {
@@ -171,13 +171,14 @@ io.on('connection', (socket) => {
       }
       playerSockets[telegramId] = socket.id;
       socket.telegramId = telegramId;
-      socket.emit('account_data', res.rows[0]);
+      
+      const isAdmin = String(telegramId) === String(ADMIN_TELEGRAM_ID);
+      socket.emit('account_data', { ...res.rows[0], isAdmin });
     } catch (err) {
       console.error("Auth error:", err);
     }
   });
 
-  // Request Leaderboard Top 10
   socket.on('get_leaderboard', async () => {
     try {
       const result = await pool.query(
@@ -228,7 +229,13 @@ io.on('connection', (socket) => {
     io.emit('cartela_availability', { available: getAvailableCartelas() });
   });
 
+  // Admin Security Check
   socket.on('admin_start_game', () => {
+    if (String(socket.telegramId) !== String(ADMIN_TELEGRAM_ID)) {
+      socket.emit('admin_error', { message: 'Unauthorized action!' });
+      return;
+    }
+
     drawnNumbers = [];
     availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
     io.emit('game_started');
@@ -254,7 +261,6 @@ io.on('connection', (socket) => {
 
       if (socket.telegramId) {
         try {
-          // Increment balance, record victory history & add +1 to wins
           await pool.query('UPDATE users SET balance = balance + $1, wins = wins + 1 WHERE telegram_id = $2', [prizePool, socket.telegramId]);
           await pool.query('INSERT INTO game_history (winner_id, prize_amount) VALUES ($1, $2)', [socket.telegramId, prizePool]);
         } catch (err) {
