@@ -34,6 +34,12 @@
       cursor: pointer;
       font-weight: bold;
     }
+    .btn-admin {
+      background: #E91E63;
+      margin-bottom: 10px;
+      width: 100%;
+      padding: 10px;
+    }
     .btn-bingo {
       background: #FF9800;
       width: 100%;
@@ -64,6 +70,14 @@
       gap: 5px;
       max-width: 350px;
       margin: 0 auto;
+    }
+    .header-cell {
+      background: #FF9800;
+      color: #000;
+      font-weight: bold;
+      font-size: 18px;
+      padding: 5px 0;
+      border-radius: 4px;
     }
     .cell {
       background: #2c2c2c;
@@ -124,7 +138,8 @@
   </div>
 
   <div id="game-view" style="display: none;">
-    <!-- Play Mode Selector -->
+    <button id="admin-start-btn" class="btn btn-admin" style="display: none;" onclick="startAdminGame()">🚀 Start Game (Admin Only)</button>
+
     <div class="mode-toggle">
       <span>Mode:</span>
       <label>
@@ -135,7 +150,7 @@
       </label>
     </div>
 
-    <div id="current-ball">Waiting for start...</div>
+    <div id="current-ball">Waiting for host to start...</div>
     
     <div class="grid" id="bingo-card"></div>
 
@@ -163,6 +178,9 @@
 
     socket.on('account_data', (data) => {
       document.getElementById('balance').innerText = parseFloat(data.balance).toFixed(2);
+      if (data.isAdmin) {
+        document.getElementById('admin-start-btn').style.display = 'block';
+      }
     });
 
     socket.on('balance_updated', (data) => {
@@ -191,6 +209,15 @@
       const cardGrid = document.getElementById('bingo-card');
       cardGrid.innerHTML = '';
 
+      // Add B I N G O Headers
+      ['B', 'I', 'N', 'G', 'O'].forEach(letter => {
+        const hCell = document.createElement('div');
+        hCell.className = 'header-cell';
+        hCell.innerText = letter;
+        cardGrid.appendChild(hCell);
+      });
+
+      // Render numbers
       data.card.forEach((row) => {
         row.forEach((num) => {
           const cell = document.createElement('div');
@@ -198,7 +225,6 @@
           cell.id = `cell-${num}`;
           cell.innerText = num === 0 ? '★' : num;
           
-          // Manual mode marking click event
           cell.onclick = () => {
             if (!isAutoMode && drawnNumbersHistory.includes(num)) {
               cell.classList.toggle('marked');
@@ -215,17 +241,19 @@
       isAutoMode = mode === 'auto';
     }
 
-    // Auto-Caller Real-Time Event
+    function startAdminGame() {
+      socket.emit('admin_start_game');
+    }
+
     socket.on('number_drawn', (data) => {
       document.getElementById('current-ball').innerText = data.display;
       drawnNumbersHistory.push(data.number);
 
       const cell = document.getElementById(`cell-${data.number}`);
       
-      // AUTO MODE: Automatically mark square and check for auto-win
       if (isAutoMode) {
         if (cell) cell.classList.add('marked');
-        socket.emit('claim_bingo'); // Silent auto-claim trigger
+        socket.emit('claim_bingo');
       }
     });
 
@@ -234,7 +262,6 @@
     }
 
     socket.on('false_alarm', (data) => {
-      // Only show false bingo popups in manual mode
       if (!isAutoMode) alert(data.message);
     });
 
