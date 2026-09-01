@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>75-Ball Bingo WebApp</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #121212;
+      color: #fff;
+      text-align: center;
+      margin: 0;
+      padding: 10px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #1e1e1e;
+      padding: 10px 15px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+    .balance-box {
+      font-weight: bold;
+      color: #4CAF50;
+    }
+    .btn {
+      background: #2196F3;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .btn-bingo {
+      background: #FF9800;
+      width: 100%;
+      padding: 12px;
+      font-size: 18px;
+      margin-top: 10px;
+    }
+    #current-ball {
+      font-size: 32px;
+      font-weight: bold;
+      color: #FFD700;
+      margin: 15px 0;
+      min-height: 40px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 5px;
+      max-width: 350px;
+      margin: 0 auto;
+    }
+    .cell {
+      background: #2c2c2c;
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      border-radius: 4px;
+      font-size: 16px;
+    }
+    .cell.free { background: #FFD700; color: #000; }
+    .cell.marked { background: #4CAF50; color: #fff; }
+    
+    .cartela-picker {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 5px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .cartela-btn {
+      background: #333;
+      color: #fff;
+      padding: 10px;
+      border: 1px solid #444;
+      border-radius: 4px;
+    }
+    .cartela-btn.disabled { opacity: 0.3; pointer-events: none; }
+
+    /* Modal Styling */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.8);
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-content {
+      background: #222;
+      padding: 20px;
+      border-radius: 8px;
+      width: 80%;
+      max-width: 300px;
+    }
+    .leaderboard-list {
+      text-align: left;
+      padding: 0;
+      list-style: none;
+    }
+    .leaderboard-list li {
+      padding: 5px 0;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="balance-box">💰 <span id="balance">100.00</span></div>
+    <button class="btn" onclick="openLeaderboard()">🏆 Top Players</button>
+  </div>
+
+  <div id="selection-view">
+    <h3>Select Your Cartela (1 - 75)</h3>
+    <div id="cartela-grid" class="cartela-picker"></div>
+  </div>
+
+  <div id="game-view" style="display: none;">
+    <div id="current-ball">Waiting for start...</div>
+    
+    <div class="grid" id="bingo-card"></div>
+
+    <button class="btn btn-bingo" onclick="claimBingo()">Claim Bingo! 🏆</button>
+  </div>
+
+  <!-- Leaderboard Modal -->
+  <div id="leaderboard-modal" class="modal">
+    <div class="modal-content">
+      <h3>🏆 Leaderboard</h3>
+      <ul id="leaderboard-list" class="leaderboard-list"></ul>
+      <button class="btn" onclick="closeLeaderboard()">Close</button>
+    </div>
+  </div>
+
+  <script>
+    const socket = io('YOUR_RENDER_BACKEND_URL'); // Replace with your actual Render URL
+    const tg = window.Telegram?.WebApp;
+    if (tg) tg.expand();
+
+    const userTelegramId = tg?.initDataUnsafe?.user?.id || 12345678;
+
+    // Authenticate user with server
+    socket.emit('authenticate', userTelegramId);
+
+    socket.on('account_data', (data) => {
+      document.getElementById('balance').innerText = parseFloat(data.balance).toFixed(2);
+    });
+
+    socket.on('balance_updated', (data) => {
+      document.getElementById('balance').innerText = parseFloat(data.balance).toFixed(2);
+    });
+
+    // Handle Cartela Picker
+    socket.on('cartela_list', (data) => {
+      renderCartelaPicker(data.cartelas);
+    });
+
+    socket.on('cartela_availability', (data) => {
+      renderCartelaPicker(data.available);
+    });
+
+    function renderCartelaPicker(available) {
+      const grid = document.getElementById('cartela-grid');
+      grid.innerHTML = '';
+      for (let i = 1; i <= 75; i++) {
+        const btn = document.createElement('button');
+        btn.className = 'cartela-btn' + (available.includes(i) ? '' : ' disabled');
+        btn.innerText = '#' + i;
+        btn.onclick = () => socket.emit('select_cartela', i);
+        grid.appendChild(btn);
+      }
+    }
+
+    // Render Bingo Card
+    socket.on('cartela_selected', (data) => {
+      document.getElementById('selection-view').style.display = 'none';
+      document.getElementById('game-view').style.display = 'block';
+
+      const cardGrid = document.getElementById('bingo-card');
+      cardGrid.innerHTML = '';
+
+      data.card.forEach((row, rIdx) => {
+        row.forEach((num, cIdx) => {
+          const cell = document.createElement('div');
+          cell.className = 'cell' + (num === 0 ? ' free' : '');
+          cell.id = `cell-${num}`;
+          cell.innerText = num === 0 ? '★' : num;
+          cardGrid.appendChild(cell);
+        });
+      });
+    });
+
+    // Auto-caller events
+    socket.on('number_drawn', (data) => {
+      document.getElementById('current-ball').innerText = data.display;
+      const cell = document.getElementById(`cell-${data.number}`);
+      if (cell) cell.classList.add('marked');
+    });
+
+    function claimBingo() {
+      socket.emit('claim_bingo');
+    }
+
+    socket.on('false_alarm', (data) => {
+      alert(data.message);
+    });
+
+    socket.on('game_over', (data) => {
+      alert(`🎉 Game Over! Winner Prize: $${data.prize}`);
+    });
+
+    // Leaderboard UI functions
+    function openLeaderboard() {
+      socket.emit('get_leaderboard');
+      document.getElementById('leaderboard-modal').style.display = 'flex';
+    }
+
+    function closeLeaderboard() {
+      document.getElementById('leaderboard-modal').style.display = 'none';
+    }
+
+    socket.on('leaderboard_data', (data) => {
+      const list = document.getElementById('leaderboard-list');
+      list.innerHTML = '';
+      data.forEach((user, idx) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>#${idx+1} ${user.username || 'Player'}</span> <span>${user.wins} wins</span>`;
+        list.appendChild(li);
+      });
+    });
+  </script>
+</body>
+</html>
