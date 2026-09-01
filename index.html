@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -39,6 +41,7 @@
       margin-bottom: 10px;
       width: 100%;
       padding: 10px;
+      font-size: 16px;
     }
     .btn-bingo {
       background: #FF9800;
@@ -76,7 +79,7 @@
       color: #000;
       font-weight: bold;
       font-size: 18px;
-      padding: 5px 0;
+      padding: 8px 0;
       border-radius: 4px;
     }
     .cell {
@@ -166,12 +169,11 @@
   </div>
 
   <script>
-    const socket = io('https://your-app-name.onrender.com');
- // Replace with your Render Backend URL
+    const socket = io('YOUR_RENDER_BACKEND_URL'); // Replace with your Render URL
     const tg = window.Telegram?.WebApp;
     if (tg) tg.expand();
 
-    const userTelegramId = tg?.initDataUnsafe?.user?.id || 12345678;
+    const userTelegramId = tg?.initDataUnsafe?.user?.id || 5486724656;
     let isAutoMode = true;
     let drawnNumbersHistory = [];
 
@@ -179,7 +181,7 @@
 
     socket.on('account_data', (data) => {
       document.getElementById('balance').innerText = parseFloat(data.balance).toFixed(2);
-      if (data.isAdmin) {
+      if (data.isAdmin || Number(userTelegramId) === 5486724656) {
         document.getElementById('admin-start-btn').style.display = 'block';
       }
     });
@@ -210,7 +212,6 @@
       const cardGrid = document.getElementById('bingo-card');
       cardGrid.innerHTML = '';
 
-      // Add B I N G O Headers
       ['B', 'I', 'N', 'G', 'O'].forEach(letter => {
         const hCell = document.createElement('div');
         hCell.className = 'header-cell';
@@ -218,7 +219,6 @@
         cardGrid.appendChild(hCell);
       });
 
-      // Render numbers
       data.card.forEach((row) => {
         row.forEach((num) => {
           const cell = document.createElement('div');

@@ -11,8 +11,8 @@ const io = new Server(server, {
 
 const port = process.env.PORT || 10000;
 
-// Set your Admin Telegram ID here (Replace with your actual Telegram User ID)
-const ADMIN_TELEGRAM_ID = 5486724656; 
+// Admin Telegram User ID
+const ADMIN_TELEGRAM_ID = 5486724656;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -162,6 +162,8 @@ io.on('connection', (socket) => {
 
   socket.on('authenticate', async (telegramId) => {
     try {
+      const isAdmin = Number(telegramId) === ADMIN_TELEGRAM_ID;
+
       let res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
       if (res.rows.length === 0) {
         res = await pool.query(
@@ -172,7 +174,6 @@ io.on('connection', (socket) => {
       playerSockets[telegramId] = socket.id;
       socket.telegramId = telegramId;
       
-      const isAdmin = String(telegramId) === String(ADMIN_TELEGRAM_ID);
       socket.emit('account_data', { ...res.rows[0], isAdmin });
     } catch (err) {
       console.error("Auth error:", err);
@@ -229,9 +230,8 @@ io.on('connection', (socket) => {
     io.emit('cartela_availability', { available: getAvailableCartelas() });
   });
 
-  // Admin Security Check
   socket.on('admin_start_game', () => {
-    if (String(socket.telegramId) !== String(ADMIN_TELEGRAM_ID)) {
+    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) {
       socket.emit('admin_error', { message: 'Unauthorized action!' });
       return;
     }
@@ -294,3 +294,4 @@ app.get('/', (req, res) => {
 server.listen(port, () => {
   console.log(`🚀 Server listening on port ${port}`);
 });
+
