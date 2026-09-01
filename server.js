@@ -1,321 +1,321 @@
-cat << 'EOF' > index.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Yeketema Bingo</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <style>
-        body {
-            font-family: system-ui, -apple-system, sans-serif;
-            background: #0f172a;
-            color: white;
-            text-align: center;
-            margin: 0;
-            padding: 16px;
-        }
-        .title {
-            font-size: 1.4rem;
-            font-weight: bold;
-            margin-bottom: 18px;
-        }
-        .admin-button {
-            background: #22c55e;
-            color: white;
-            border: none;
-            padding: 12px;
-            font-size: 1.05rem;
-            border-radius: 9px;
-            width: 100%;
-            max-width: 360px;
-            font-weight: bold;
-            cursor: pointer;
-            margin: 0 auto 15px auto;
-            display: none;
-        }
-        #cartela-screen { display: block; }
-        .selection-title { font-size: 1.1rem; margin-bottom: 15px; }
-        .cartela-grid {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 8px;
-            max-width: 360px;
-            margin: 0 auto;
-        }
-        .cartela-button {
-            background: #1e293b;
-            color: white;
-            border: 1px solid #334155;
-            border-radius: 9px;
-            padding: 14px 5px;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        .cartela-button:active { background: #2563eb; }
-        .cartela-button.unavailable {
-            background: #334155;
-            color: #64748b;
-            text-decoration: line-through;
-            cursor: not-allowed;
-        }
-        #game-screen { display: none; }
-        .top-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            max-width: 340px;
-            margin: 0 auto 15px auto;
-        }
-        .prize-badge {
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            color: #ffffff;
-            padding: 8px 14px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.95rem;
-            box-shadow: 0 2px 8px rgba(245, 158, 11, 0.4);
-        }
-        .card-number { font-size: 1rem; font-weight: bold; margin-bottom: 12px; }
-        .drawn-container {
-            background: #1e293b;
-            padding: 12px;
-            border-radius: 12px;
-            margin-bottom: 16px;
-        }
-        #drawn-box {
-            font-size: 2.8rem;
-            color: #38bdf8;
-            font-weight: bold;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 8px;
-            max-width: 340px;
-            margin: 0 auto 20px auto;
-        }
-        .header-cell {
-            background: #f97316;
-            color: #0f172a;
-            font-weight: bold;
-            font-size: 1.2rem;
-            padding: 10px 0;
-            border-radius: 8px;
-        }
-        .cell {
-            background: #1e293b;
-            aspect-ratio: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 1.1rem;
-            border: 1px solid #334155;
-        }
-        .cell.marked {
-            background: #22c55e;
-            border-color: #4ade80;
-            color: #052e16;
-        }
-        .cell.star {
-            background: #eab308;
-            border-color: #fde047;
-            color: #422006;
-        }
-        .claim-button {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 14px;
-            font-size: 1.1rem;
-            border-radius: 10px;
-            width: 100%;
-            max-width: 340px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        .back-button {
-            background: #475569;
-            color: white;
-            border: none;
-            padding: 8px 14px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-    </style>
-</head>
-<body>
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const { Pool } = require('pg');
 
-    <div class="title">🎲 Yeketema Bingo</div>
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] }
+});
 
-    <button id="admin-start-btn" class="admin-button" onclick="adminStartGame()">
-        🚀 Start Game (Admin)
-    </button>
+const port = process.env.PORT || 10000;
+const ADMIN_TELEGRAM_ID = 5486724656;
 
-    <div id="cartela-screen">
-        <div class="selection-title">🎫 Choose Your Cartela</div>
-        <div id="cartela-grid" class="cartela-grid"></div>
-    </div>
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+});
 
-    <div id="game-screen">
-        <div class="top-bar">
-            <button class="back-button" onclick="backToCartelas()">← Change</button>
-            <div class="prize-badge">
-                🏆 Win: $<span id="prize-amount">0.00</span>
-            </div>
-        </div>
+async function initDB() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        telegram_id BIGINT PRIMARY KEY,
+        username VARCHAR(100),
+        balance NUMERIC(10, 2) DEFAULT 0.00,
+        wins INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
 
-        <div id="selected-card-number" class="card-number">Cartela --</div>
+      CREATE TABLE IF NOT EXISTS game_history (
+        id SERIAL PRIMARY KEY,
+        winner_id BIGINT,
+        prize_amount NUMERIC(10, 2),
+        won_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log("🐘 Database initialized successfully!");
+  } catch (err) {
+    console.error("❌ Database error:", err);
+  }
+}
 
-        <div class="drawn-container">
-            <small style="color: #94a3b8;">CURRENT NUMBER</small>
-            <div id="drawn-box">--</div>
-        </div>
+initDB();
 
-        <div class="grid" id="bingo-grid"></div>
+function generateBingoCard() {
+  const getRandomNumbers = (min, max, count) => {
+    const nums = new Set();
+    while (nums.size < count) {
+      nums.add(Math.floor(Math.random() * (max - min + 1)) + min);
+    }
+    return Array.from(nums);
+  };
 
-        <button class="claim-button" onclick="claimBingo()">Claim Bingo! 🏆</button>
-    </div>
+  const b = getRandomNumbers(1, 15, 5);
+  const i = getRandomNumbers(16, 30, 5);
+  const n = getRandomNumbers(31, 45, 4);
+  const g = getRandomNumbers(46, 60, 5);
+  const o = getRandomNumbers(61, 75, 5);
 
-    <script>
-        const tg = window.Telegram?.WebApp;
-        if (tg) tg.expand();
+  const card = [];
+  for (let r = 0; r < 5; r++) {
+    card.push([
+      b[r],
+      i[r],
+      r === 2 ? 0 : (r > 2 ? n[r - 1] : n[r]),
+      g[r],
+      o[r]
+    ]);
+  }
+  return card;
+}
 
-        const socket = io("https://bingo-backend-7rt0.onrender.com");
+const cartelas = {};
+for (let id = 1; id <= 75; id++) {
+  cartelas[id] = generateBingoCard();
+}
 
-        socket.on("connect", () => {
-            const userTelegramId = tg?.initDataUnsafe?.user?.id || 5486724656;
-            socket.emit("authenticate", userTelegramId);
-        });
+let takenCartelas = {}; 
+let playerSockets = {}; 
+let drawnNumbers = [];
+let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
+let gameInterval = null;
+let drawSpeed = 4000; // Default 4 seconds
+let isPaused = false;
+const ENTRY_FEE = 10.00;
 
-        socket.on("account_data", (data) => {
-            if (data.isAdmin || String(tg?.initDataUnsafe?.user?.id) === "5486724656") {
-                document.getElementById("admin-start-btn").style.display = "block";
-            }
-        });
+function broadcastPrizePool() {
+  const activeCount = Object.keys(takenCartelas).length;
+  const currentPrize = activeCount * ENTRY_FEE;
+  io.emit('prize_pool_update', { prize: currentPrize, players: activeCount });
+}
 
-        socket.on("prize_pool_update", (data) => {
-            document.getElementById("prize-amount").innerText = parseFloat(data.prize).toFixed(2);
-        });
+function getLetterPrefix(num) {
+  if (num <= 15) return "B " + num;
+  if (num <= 30) return "I " + num;
+  if (num <= 45) return "N " + num;
+  if (num <= 60) return "G " + num;
+  return "O " + num;
+}
 
-        function adminStartGame() {
-            socket.emit("admin_start_game");
-        }
+function isMarked(num) {
+  return num === 0 || drawnNumbers.includes(num);
+}
 
-        socket.on("admin_success", (data) => alert(data.message));
-        socket.on("admin_error", (data) => alert(data.message));
+function verifyBingo(card) {
+  let horizontalCount = 0;
+  let verticalCount = 0;
+  let diagonalCount = 0;
 
-        let myCard = [];
-        let myCartelaNumber = null;
+  for (let r = 0; r < 5; r++) {
+    if (card[r].every(isMarked)) horizontalCount++;
+  }
 
-        socket.on("cartela_list", (data) => showCartelaList(data.cartelas));
+  for (let c = 0; c < 5; c++) {
+    let colComplete = true;
+    for (let r = 0; r < 5; r++) {
+      if (!isMarked(card[r][c])) {
+        colComplete = false;
+        break;
+      }
+    }
+    if (colComplete) verticalCount++;
+  }
 
-        function showCartelaList(available) {
-            const container = document.getElementById("cartela-grid");
-            container.innerHTML = "";
-            for (let i = 1; i <= 75; i++) {
-                const button = document.createElement("button");
-                button.innerText = i;
-                button.className = "cartela-button";
-                if (!available.includes(i)) {
-                    button.classList.add("unavailable");
-                    button.disabled = true;
-                } else {
-                    button.onclick = () => selectCartela(i);
-                }
-                container.appendChild(button);
-            }
+  if ([0, 1, 2, 3, 4].every(i => isMarked(card[i][i]))) diagonalCount++;
+  if ([0, 1, 2, 3, 4].every(i => isMarked(card[i][4 - i]))) diagonalCount++;
+
+  const cornersFilled = isMarked(card[0][0]) && isMarked(card[0][4]) && isMarked(card[4][0]) && isMarked(card[4][4]);
+  const totalLines = horizontalCount + verticalCount + diagonalCount;
+
+  let totalMarked = 0;
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      if (isMarked(card[r][c])) totalMarked++;
+    }
+  }
+
+  const isFullCard = totalMarked === 25;
+  const hasTwoLines = totalLines >= 2;
+  const hasLineAndCorners = cornersFilled && (horizontalCount >= 1 || verticalCount >= 1 || diagonalCount >= 1);
+
+  return { valid: hasTwoLines || hasLineAndCorners || isFullCard, fullCard: isFullCard };
+}
+
+function runDrawCycle() {
+  if (gameInterval) clearInterval(gameInterval);
+
+  gameInterval = setInterval(() => {
+    if (isPaused) return;
+
+    if (availableBalls.length === 0) {
+      clearInterval(gameInterval);
+      io.emit('game_finished');
+      return;
+    }
+
+    const randomIndex = Math.floor(Math.random() * availableBalls.length);
+    const num = availableBalls.splice(randomIndex, 1)[0];
+    drawnNumbers.push(num);
+
+    io.emit('number_drawn', {
+      number: num,
+      display: getLetterPrefix(num)
+    });
+  }, drawSpeed);
+}
+
+const getAvailableCartelas = () => Object.keys(cartelas)
+  .map(Number)
+  .filter(id => !Object.values(takenCartelas).some(item => item.number === id));
+
+io.on('connection', (socket) => {
+
+  // Emit initial cartela list right on raw connection
+  socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
+
+  socket.on('authenticate', async (userData) => {
+    try {
+      const telegramId = typeof userData === 'object' ? userData.id : userData;
+      const username = typeof userData === 'object' ? (userData.username || userData.first_name) : 'Player';
+
+      if (!telegramId) return;
+
+      const isAdmin = Number(telegramId) === ADMIN_TELEGRAM_ID;
+
+      let res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
+      
+      if (res.rows.length === 0) {
+        res = await pool.query(
+          'INSERT INTO users (telegram_id, username, balance) VALUES ($1, $2, $3) RETURNING *',
+          [telegramId, username, 0.00]
+        );
+        console.log(`👤 New player registered: ${username} (${telegramId})`);
+      } else {
+        await pool.query('UPDATE users SET username = $1 WHERE telegram_id = $2', [username, telegramId]);
+      }
+
+      playerSockets[telegramId] = socket.id;
+      socket.telegramId = telegramId;
+      
+      socket.emit('account_data', { ...res.rows[0], isAdmin });
+      socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
+      broadcastPrizePool();
+    } catch (err) {
+      console.error("❌ Auth error:", err);
+    }
+  });
+
+  socket.on('select_cartela', async (number) => {
+    const isTaken = Object.values(takenCartelas).some(item => item.number === number);
+    if (isTaken) {
+      socket.emit('cartela_error', { message: 'Cartela already taken!' });
+      return;
+    }
+
+    if (socket.telegramId) {
+      try {
+        const userRes = await pool.query('SELECT balance FROM users WHERE telegram_id = $1', [socket.telegramId]);
+        const currentBalance = parseFloat(userRes.rows[0]?.balance || 0);
+
+        if (currentBalance < ENTRY_FEE) {
+          socket.emit('cartela_error', { message: 'Insufficient balance!' });
+          return;
         }
 
-        function selectCartela(number) {
-            socket.emit("select_cartela", number);
+        const updatedUser = await pool.query(
+          'UPDATE users SET balance = balance - $1 WHERE telegram_id = $2 RETURNING balance',
+          [ENTRY_FEE, socket.telegramId]
+        );
+
+        socket.emit('balance_updated', { balance: updatedUser.rows[0].balance });
+      } catch (err) {
+        console.error("Deduction error:", err);
+      }
+    }
+
+    takenCartelas[socket.id] = { number, userId: socket.telegramId };
+    socket.emit('cartela_selected', { number: number, card: cartelas[number] });
+    io.emit('cartela_availability', { available: getAvailableCartelas() });
+    broadcastPrizePool();
+  });
+
+  // Admin Controls
+  socket.on('admin_start_game', () => {
+    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
+    drawnNumbers = [];
+    availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
+    isPaused = false;
+    io.emit('game_started');
+    runDrawCycle();
+    socket.emit('admin_success', { message: 'Game Started!' });
+  });
+
+  socket.on('admin_toggle_pause', () => {
+    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
+    isPaused = !isPaused;
+    io.emit('game_pause_status', { isPaused });
+  });
+
+  socket.on('admin_set_speed', (speedInMs) => {
+    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
+    drawSpeed = Number(speedInMs);
+    if (gameInterval && !isPaused) {
+      runDrawCycle();
+    }
+  });
+
+  socket.on('claim_bingo', async () => {
+    const playerSelection = takenCartelas[socket.id];
+    if (!playerSelection) {
+      socket.emit('false_alarm', { message: 'You have not selected a cartela!' });
+      return;
+    }
+
+    const playerCard = cartelas[playerSelection.number];
+    const result = verifyBingo(playerCard);
+
+    if (result.valid) {
+      if (gameInterval) clearInterval(gameInterval);
+
+      const totalPlayers = Object.keys(takenCartelas).length;
+      const prizePool = totalPlayers * ENTRY_FEE;
+
+      if (socket.telegramId) {
+        try {
+          await pool.query('UPDATE users SET balance = balance + $1, wins = wins + 1 WHERE telegram_id = $2', [socket.telegramId, prizePool]);
+          await pool.query('INSERT INTO game_history (winner_id, prize_amount) VALUES ($1, $2)', [socket.telegramId, prizePool]);
+        } catch (err) {
+          console.error("Prize payout error:", err);
         }
+      }
 
-        socket.on("cartela_selected", (data) => {
-            myCartelaNumber = data.number;
-            myCard = data.card;
-            document.getElementById("selected-card-number").innerText = "🎫 Cartela " + myCartelaNumber;
-            document.getElementById("cartela-screen").style.display = "none";
-            document.getElementById("game-screen").style.display = "block";
-            renderGrid();
-        });
+      io.emit('game_over', { winner: socket.id, prize: prizePool, fullCard: result.fullCard });
+    } else {
+      socket.emit('false_alarm', { 
+        message: 'False Bingo! Rules:\n- 2 complete lines\n- 1 line + 4 corners\n- Full cartela' 
+      });
+    }
+  });
 
-        socket.on("cartela_availability", (data) => {
-            if (document.getElementById("cartela-screen").style.display !== "none") {
-                showCartelaList(data.available);
-            }
-        });
+  socket.on('request_cartelas', () => {
+    delete takenCartelas[socket.id];
+    socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
+    broadcastPrizePool();
+  });
 
-        socket.on("cartela_error", (data) => alert(data.message));
+  socket.on('disconnect', () => {
+    delete takenCartelas[socket.id];
+    if (socket.telegramId) delete playerSockets[socket.telegramId];
+    broadcastPrizePool();
+  });
+});
 
-        function renderGrid() {
-            const grid = document.getElementById("bingo-grid");
-            grid.innerHTML = "";
+app.get('/', (req, res) => {
+  res.json({ status: "online", activePlayers: Object.keys(takenCartelas).length });
+});
 
-            ['B', 'I', 'N', 'G', 'O'].forEach(letter => {
-                const headerCell = document.createElement("div");
-                headerCell.className = "header-cell";
-                headerCell.innerText = letter;
-                grid.appendChild(headerCell);
-            });
-
-            for (let row = 0; row < 5; row++) {
-                for (let col = 0; col < 5; col++) {
-                    const number = myCard[row][col];
-                    const cell = document.createElement("div");
-
-                    if (number === 0) {
-                        cell.className = "cell star marked";
-                        cell.innerText = "★";
-                    } else {
-                        cell.className = "cell";
-                        cell.innerText = number < 10 ? "0" + number : number;
-                        cell.id = "cell-" + number;
-                    }
-                    grid.appendChild(cell);
-                }
-            }
-        }
-
-        socket.on("number_drawn", (data) => {
-            const display = data.display || (data.number < 10 ? "0" + data.number : data.number);
-            document.getElementById("drawn-box").innerText = display;
-            markNumber(data.number);
-        });
-
-        function markNumber(number) {
-            const cell = document.getElementById("cell-" + number);
-            if (cell) cell.classList.add("marked");
-        }
-
-        socket.on("game_started", () => console.log("🎱 Game started!"));
-        socket.on("game_finished", () => alert("🎱 All 75 numbers have been called."));
-
-        socket.on("game_over", (data) => {
-            if (data.winner === socket.id) {
-                alert(data.fullCard ? "🏆 BINGO!\n\n🎁 FULL CARTELA BONUS!" : "🏆 BINGO!\n\nYou completed 2 lines!");
-            } else {
-                alert("🏆 GAME OVER!\n\nAnother player won.");
-            }
-        });
-
-        socket.on("false_alarm", (data) => alert(data.message));
-
-        function claimBingo() {
-            socket.emit("claim_bingo");
-        }
-
-        function backToCartelas() {
-            document.getElementById("game-screen").style.display = "none";
-            document.getElementById("cartela-screen").style.display = "block";
-            socket.emit("request_cartelas");
-        }
-    </script>
-</body>
-</html>
-EOF
+server.listen(port, () => {
+  console.log(`🚀 Server listening on port ${port}`);
+});
