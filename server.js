@@ -12,7 +12,7 @@ const io = new Server(server, {
 const port = process.env.PORT || 10000;
 
 // Set your Admin Telegram ID here (Replace with your actual Telegram User ID)
-const ADMIN_TELEGRAM_ID = 12345678; 
+const ADMIN_TELEGRAM_ID = 5486724656; 
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
