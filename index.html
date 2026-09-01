@@ -24,10 +24,7 @@
       border-radius: 8px;
       margin-bottom: 10px;
     }
-    .balance-box {
-      font-weight: bold;
-      color: #4CAF50;
-    }
+    .balance-box { font-weight: bold; color: #4CAF50; }
     .btn {
       background: #2196F3;
       color: white;
@@ -44,11 +41,21 @@
       font-size: 18px;
       margin-top: 10px;
     }
+    .mode-toggle {
+      background: #2a2a2a;
+      padding: 8px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+    }
     #current-ball {
       font-size: 32px;
       font-weight: bold;
       color: #FFD700;
-      margin: 15px 0;
+      margin: 10px 0;
       min-height: 40px;
     }
     .grid {
@@ -67,6 +74,7 @@
       font-weight: bold;
       border-radius: 4px;
       font-size: 16px;
+      cursor: pointer;
     }
     .cell.free { background: #FFD700; color: #000; }
     .cell.marked { background: #4CAF50; color: #fff; }
@@ -86,8 +94,6 @@
       border-radius: 4px;
     }
     .cartela-btn.disabled { opacity: 0.3; pointer-events: none; }
-
-    /* Modal Styling */
     .modal {
       display: none;
       position: fixed;
@@ -102,17 +108,6 @@
       border-radius: 8px;
       width: 80%;
       max-width: 300px;
-    }
-    .leaderboard-list {
-      text-align: left;
-      padding: 0;
-      list-style: none;
-    }
-    .leaderboard-list li {
-      padding: 5px 0;
-      border-bottom: 1px solid #333;
-      display: flex;
-      justify-content: space-between;
     }
   </style>
 </head>
@@ -129,30 +124,41 @@
   </div>
 
   <div id="game-view" style="display: none;">
+    <!-- Play Mode Selector -->
+    <div class="mode-toggle">
+      <span>Mode:</span>
+      <label>
+        <input type="radio" name="playMode" value="auto" checked onchange="toggleMode()"> 🤖 Auto
+      </label>
+      <label>
+        <input type="radio" name="playMode" value="manual" onchange="toggleMode()"> 🖐️ Manual
+      </label>
+    </div>
+
     <div id="current-ball">Waiting for start...</div>
     
     <div class="grid" id="bingo-card"></div>
 
-    <button class="btn btn-bingo" onclick="claimBingo()">Claim Bingo! 🏆</button>
+    <button class="btn btn-bingo" id="bingo-btn" onclick="claimBingo()">Claim Bingo! 🏆</button>
   </div>
 
-  <!-- Leaderboard Modal -->
   <div id="leaderboard-modal" class="modal">
     <div class="modal-content">
       <h3>🏆 Leaderboard</h3>
-      <ul id="leaderboard-list" class="leaderboard-list"></ul>
+      <ul id="leaderboard-list" style="text-align: left; padding: 0; list-style: none;"></ul>
       <button class="btn" onclick="closeLeaderboard()">Close</button>
     </div>
   </div>
 
   <script>
-    const socket = io('YOUR_RENDER_BACKEND_URL'); // Replace with your actual Render URL
+    const socket = io('YOUR_RENDER_BACKEND_URL'); // Replace with your Render Backend URL
     const tg = window.Telegram?.WebApp;
     if (tg) tg.expand();
 
     const userTelegramId = tg?.initDataUnsafe?.user?.id || 12345678;
+    let isAutoMode = true;
+    let drawnNumbersHistory = [];
 
-    // Authenticate user with server
     socket.emit('authenticate', userTelegramId);
 
     socket.on('account_data', (data) => {
@@ -163,14 +169,8 @@
       document.getElementById('balance').innerText = parseFloat(data.balance).toFixed(2);
     });
 
-    // Handle Cartela Picker
-    socket.on('cartela_list', (data) => {
-      renderCartelaPicker(data.cartelas);
-    });
-
-    socket.on('cartela_availability', (data) => {
-      renderCartelaPicker(data.available);
-    });
+    socket.on('cartela_list', (data) => renderCartelaPicker(data.cartelas));
+    socket.on('cartela_availability', (data) => renderCartelaPicker(data.available));
 
     function renderCartelaPicker(available) {
       const grid = document.getElementById('cartela-grid');
@@ -184,7 +184,6 @@
       }
     }
 
-    // Render Bingo Card
     socket.on('cartela_selected', (data) => {
       document.getElementById('selection-view').style.display = 'none';
       document.getElementById('game-view').style.display = 'block';
@@ -192,22 +191,42 @@
       const cardGrid = document.getElementById('bingo-card');
       cardGrid.innerHTML = '';
 
-      data.card.forEach((row, rIdx) => {
-        row.forEach((num, cIdx) => {
+      data.card.forEach((row) => {
+        row.forEach((num) => {
           const cell = document.createElement('div');
           cell.className = 'cell' + (num === 0 ? ' free' : '');
           cell.id = `cell-${num}`;
           cell.innerText = num === 0 ? '★' : num;
+          
+          // Manual mode marking click event
+          cell.onclick = () => {
+            if (!isAutoMode && drawnNumbersHistory.includes(num)) {
+              cell.classList.toggle('marked');
+            }
+          };
+
           cardGrid.appendChild(cell);
         });
       });
     });
 
-    // Auto-caller events
+    function toggleMode() {
+      const mode = document.querySelector('input[name="playMode"]:checked').value;
+      isAutoMode = mode === 'auto';
+    }
+
+    // Auto-Caller Real-Time Event
     socket.on('number_drawn', (data) => {
       document.getElementById('current-ball').innerText = data.display;
+      drawnNumbersHistory.push(data.number);
+
       const cell = document.getElementById(`cell-${data.number}`);
-      if (cell) cell.classList.add('marked');
+      
+      // AUTO MODE: Automatically mark square and check for auto-win
+      if (isAutoMode) {
+        if (cell) cell.classList.add('marked');
+        socket.emit('claim_bingo'); // Silent auto-claim trigger
+      }
     });
 
     function claimBingo() {
@@ -215,14 +234,14 @@
     }
 
     socket.on('false_alarm', (data) => {
-      alert(data.message);
+      // Only show false bingo popups in manual mode
+      if (!isAutoMode) alert(data.message);
     });
 
     socket.on('game_over', (data) => {
       alert(`🎉 Game Over! Winner Prize: $${data.prize}`);
     });
 
-    // Leaderboard UI functions
     function openLeaderboard() {
       socket.emit('get_leaderboard');
       document.getElementById('leaderboard-modal').style.display = 'flex';
