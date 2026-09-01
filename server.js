@@ -11,7 +11,7 @@ const io = new Server(server, {
 
 const port = process.env.PORT || 10000;
 
-// PostgreSQL Pool
+// PostgreSQL Pool Connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
@@ -24,6 +24,7 @@ async function initDB() {
         telegram_id BIGINT PRIMARY KEY,
         username VARCHAR(100),
         balance NUMERIC(10, 2) DEFAULT 100.00,
+        wins INT DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -76,8 +77,8 @@ for (let id = 1; id <= 75; id++) {
   cartelas[id] = generateBingoCard();
 }
 
-let takenCartelas = {}; // socketId -> { number, userId }
-let playerSockets = {}; // userId -> socketId
+let takenCartelas = {}; 
+let playerSockets = {}; 
 let drawnNumbers = [];
 let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
 let gameInterval = null;
@@ -156,10 +157,9 @@ function startAutoCaller() {
   }, 4000);
 }
 
-// Socket handling with DB integration
+// Socket connections with Leaderboard & Win Updates
 io.on('connection', (socket) => {
 
-  // Auth & Sync DB Balance
   socket.on('authenticate', async (telegramId) => {
     try {
       let res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
@@ -177,13 +177,24 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Request Leaderboard Top 10
+  socket.on('get_leaderboard', async () => {
+    try {
+      const result = await pool.query(
+        'SELECT telegram_id, username, wins, balance FROM users ORDER BY wins DESC LIMIT 10'
+      );
+      socket.emit('leaderboard_data', result.rows);
+    } catch (err) {
+      console.error("Leaderboard error:", err);
+    }
+  });
+
   const getAvailableCartelas = () => Object.keys(cartelas)
     .map(Number)
     .filter(id => !Object.values(takenCartelas).some(item => item.number === id));
 
   socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
 
-  // Select Cartela & Deduct Entry Fee
   socket.on('select_cartela', async (number) => {
     const isTaken = Object.values(takenCartelas).some(item => item.number === number);
     if (isTaken) {
@@ -225,7 +236,6 @@ io.on('connection', (socket) => {
     socket.emit('admin_success', { message: 'Game Started!' });
   });
 
-  // Claim Bingo & Credit Winner
   socket.on('claim_bingo', async () => {
     const playerSelection = takenCartelas[socket.id];
     if (!playerSelection) {
@@ -244,7 +254,8 @@ io.on('connection', (socket) => {
 
       if (socket.telegramId) {
         try {
-          await pool.query('UPDATE users SET balance = balance + $1 WHERE telegram_id = $2', [prizePool, socket.telegramId]);
+          // Increment balance, record victory history & add +1 to wins
+          await pool.query('UPDATE users SET balance = balance + $1, wins = wins + 1 WHERE telegram_id = $2', [prizePool, socket.telegramId]);
           await pool.query('INSERT INTO game_history (winner_id, prize_amount) VALUES ($1, $2)', [socket.telegramId, prizePool]);
         } catch (err) {
           console.error("Prize payout error:", err);
