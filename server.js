@@ -83,7 +83,7 @@ let playerSockets = {};
 let drawnNumbers = [];
 let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
 let gameInterval = null;
-let drawSpeed = 4000; // Default 4 seconds
+let drawSpeed = 4000;
 let isPaused = false;
 
 function broadcastPrizePool() {
@@ -173,7 +173,6 @@ const getAvailableCartelas = () => Object.keys(cartelas)
 
 io.on('connection', (socket) => {
 
-  // Emit initial cartela list right on raw connection
   socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
 
   socket.on('authenticate', async (userData) => {
@@ -185,7 +184,6 @@ io.on('connection', (socket) => {
 
       const isAdmin = Number(telegramId) === ADMIN_TELEGRAM_ID;
 
-      // Always fetch or upsert user to get the absolute latest balance from the database
       let userRecord;
       const res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
       
@@ -207,7 +205,6 @@ io.on('connection', (socket) => {
       playerSockets[telegramId] = socket.id;
       socket.telegramId = telegramId;
       
-      // Ensure balance is sent as a parsed float so the frontend displays it accurately
       socket.emit('account_data', { 
         ...userRecord, 
         balance: parseFloat(userRecord.balance), 
@@ -253,7 +250,7 @@ io.on('connection', (socket) => {
         const currentBalance = parseFloat(userRes.rows[0]?.balance || 0);
 
         if (currentBalance < stake) {
-          socket.emit('cartela_error', { message: `Insufficient balance! Current balance: ${currentBalance.toFixed(2)} ETB` });
+          socket.emit('cartela_error', { message: `Insufficient balance! Your balance: ${currentBalance.toFixed(2)} ETB` });
           return;
         }
 
@@ -276,6 +273,33 @@ io.on('connection', (socket) => {
     socket.emit('cartela_selected', { number: number, card: cartelas[number], stake: stake });
     io.emit('cartela_availability', { available: getAvailableCartelas() });
     broadcastPrizePool();
+  });
+
+  // Deposit Handler - Credits player account permanently in PostgreSQL
+  socket.on('process_deposit', async (data) => {
+    const amount = parseFloat(data.amount);
+    
+    if (isNaN(amount) || amount <= 0) {
+      socket.emit('cartela_error', { message: 'Invalid deposit amount!' });
+      return;
+    }
+
+    if (socket.telegramId) {
+      try {
+        const updatedUser = await pool.query(
+          'UPDATE users SET balance = balance + $1 WHERE telegram_id = $2 RETURNING balance',
+          [amount, socket.telegramId]
+        );
+
+        const newBalance = parseFloat(updatedUser.rows[0].balance);
+        socket.emit('balance_updated', { balance: newBalance });
+        socket.emit('balance_update', { balance: newBalance });
+        socket.emit('admin_success', { message: `Successfully deposited ${amount.toFixed(2)} ETB!` });
+      } catch (err) {
+        console.error("Deposit processing error:", err);
+        socket.emit('cartela_error', { message: 'Failed to process deposit in database.' });
+      }
+    }
   });
 
   // Admin Controls
@@ -303,7 +327,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Socket listener to add deposit balance directly from Admin
   socket.on('admin_add_balance', async (data) => {
     if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
     const { targetTelegramId, amount } = data;
@@ -323,7 +346,7 @@ io.on('connection', (socket) => {
           io.to(targetSocketId).emit('balance_update', { balance: updatedBalance });
         }
 
-        socket.emit('admin_success', { message: `Successfully added ${amount} ETB to user ${targetTelegramId}. New balance: ${updatedBalance.toFixed(2)} ETB` });
+        socket.emit('admin_success', { message: `Added ${amount} ETB to user ${targetTelegramId}. New balance: ${updatedBalance.toFixed(2)} ETB` });
       } else {
         socket.emit('cartela_error', { message: 'User ID not found in database!' });
       }
@@ -377,7 +400,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// REST Endpoint to approve deposits via external webhooks or payment bots
 app.post('/api/approve-deposit', async (req, res) => {
   const { telegram_id, amount } = req.body;
 
