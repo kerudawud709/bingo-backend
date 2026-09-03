@@ -83,11 +83,10 @@ let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
 let gameInterval = null;
 let drawSpeed = 4000; // Default 4 seconds
 let isPaused = false;
-const ENTRY_FEE = 10.00;
 
 function broadcastPrizePool() {
   const activeCount = Object.keys(takenCartelas).length;
-  const currentPrize = activeCount * ENTRY_FEE;
+  const currentPrize = Object.values(takenCartelas).reduce((sum, item) => sum + (item.stake || 10.00), 0);
   io.emit('prize_pool_update', { prize: currentPrize, players: activeCount });
 }
 
@@ -207,7 +206,27 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('select_cartela', async (number) => {
+  socket.on('select_cartela', async (data) => {
+    let number;
+    let stake = 10.00;
+
+    if (typeof data === 'object' && data !== null) {
+      number = Number(data.number);
+      stake = parseFloat(data.stake) || 10.00;
+    } else {
+      number = Number(data);
+    }
+
+    if (isNaN(number) || number < 1 || number > 75) {
+      socket.emit('cartela_error', { message: 'Invalid cartela selection!' });
+      return;
+    }
+
+    if (stake < 5.00) {
+      socket.emit('cartela_error', { message: 'Minimum stake is 5 ETB!' });
+      return;
+    }
+
     const isTaken = Object.values(takenCartelas).some(item => item.number === number);
     if (isTaken) {
       socket.emit('cartela_error', { message: 'Cartela already taken!' });
@@ -219,14 +238,14 @@ io.on('connection', (socket) => {
         const userRes = await pool.query('SELECT balance FROM users WHERE telegram_id = $1', [socket.telegramId]);
         const currentBalance = parseFloat(userRes.rows[0]?.balance || 0);
 
-        if (currentBalance < ENTRY_FEE) {
+        if (currentBalance < stake) {
           socket.emit('cartela_error', { message: 'Insufficient balance!' });
           return;
         }
 
         const updatedUser = await pool.query(
           'UPDATE users SET balance = balance - $1 WHERE telegram_id = $2 RETURNING balance',
-          [ENTRY_FEE, socket.telegramId]
+          [stake, socket.telegramId]
         );
 
         socket.emit('balance_updated', { balance: updatedUser.rows[0].balance });
@@ -235,8 +254,8 @@ io.on('connection', (socket) => {
       }
     }
 
-    takenCartelas[socket.id] = { number, userId: socket.telegramId };
-    socket.emit('cartela_selected', { number: number, card: cartelas[number] });
+    takenCartelas[socket.id] = { number, stake, userId: socket.telegramId };
+    socket.emit('cartela_selected', { number: number, card: cartelas[number], stake: stake });
     io.emit('cartela_availability', { available: getAvailableCartelas() });
     broadcastPrizePool();
   });
@@ -279,8 +298,7 @@ io.on('connection', (socket) => {
     if (result.valid) {
       if (gameInterval) clearInterval(gameInterval);
 
-      const totalPlayers = Object.keys(takenCartelas).length;
-      const prizePool = totalPlayers * ENTRY_FEE;
+      const prizePool = Object.values(takenCartelas).reduce((sum, item) => sum + (item.stake || 10.00), 0);
 
       if (socket.telegramId) {
         try {
