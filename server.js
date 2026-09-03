@@ -4,6 +4,8 @@ const { Server } = require('socket.io');
 const { Pool } = require('pg');
 
 const app = express();
+app.use(express.json());
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
@@ -183,22 +185,34 @@ io.on('connection', (socket) => {
 
       const isAdmin = Number(telegramId) === ADMIN_TELEGRAM_ID;
 
-      let res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
+      // Always fetch or upsert user to get the absolute latest balance from the database
+      let userRecord;
+      const res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
       
       if (res.rows.length === 0) {
-        res = await pool.query(
+        const newRes = await pool.query(
           'INSERT INTO users (telegram_id, username, balance) VALUES ($1, $2, $3) RETURNING *',
           [telegramId, username, 0.00]
         );
+        userRecord = newRes.rows[0];
         console.log(`👤 New player registered: ${username} (${telegramId})`);
       } else {
-        await pool.query('UPDATE users SET username = $1 WHERE telegram_id = $2', [username, telegramId]);
+        const updateRes = await pool.query(
+          'UPDATE users SET username = $1 WHERE telegram_id = $2 RETURNING *',
+          [username, telegramId]
+        );
+        userRecord = updateRes.rows[0];
       }
 
       playerSockets[telegramId] = socket.id;
       socket.telegramId = telegramId;
       
-      socket.emit('account_data', { ...res.rows[0], isAdmin });
+      // Ensure balance is sent as a parsed float so the frontend displays it accurately
+      socket.emit('account_data', { 
+        ...userRecord, 
+        balance: parseFloat(userRecord.balance), 
+        isAdmin 
+      });
       socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
       broadcastPrizePool();
     } catch (err) {
@@ -239,7 +253,7 @@ io.on('connection', (socket) => {
         const currentBalance = parseFloat(userRes.rows[0]?.balance || 0);
 
         if (currentBalance < stake) {
-          socket.emit('cartela_error', { message: 'Insufficient balance!' });
+          socket.emit('cartela_error', { message: `Insufficient balance! Current balance: ${currentBalance.toFixed(2)} ETB` });
           return;
         }
 
@@ -248,9 +262,13 @@ io.on('connection', (socket) => {
           [stake, socket.telegramId]
         );
 
-        socket.emit('balance_updated', { balance: updatedUser.rows[0].balance });
+        const newBalance = parseFloat(updatedUser.rows[0].balance);
+        socket.emit('balance_updated', { balance: newBalance });
+        socket.emit('balance_update', { balance: newBalance });
       } catch (err) {
         console.error("Deduction error:", err);
+        socket.emit('cartela_error', { message: 'Database error processing stake!' });
+        return;
       }
     }
 
@@ -282,6 +300,35 @@ io.on('connection', (socket) => {
     drawSpeed = Number(speedInMs);
     if (gameInterval && !isPaused) {
       runDrawCycle();
+    }
+  });
+
+  // Socket listener to add deposit balance directly from Admin
+  socket.on('admin_add_balance', async (data) => {
+    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
+    const { targetTelegramId, amount } = data;
+
+    try {
+      const res = await pool.query(
+        'UPDATE users SET balance = balance + $1 WHERE telegram_id = $2 RETURNING balance',
+        [parseFloat(amount), targetTelegramId]
+      );
+
+      if (res.rows.length > 0) {
+        const updatedBalance = parseFloat(res.rows[0].balance);
+        const targetSocketId = playerSockets[targetTelegramId];
+
+        if (targetSocketId) {
+          io.to(targetSocketId).emit('balance_updated', { balance: updatedBalance });
+          io.to(targetSocketId).emit('balance_update', { balance: updatedBalance });
+        }
+
+        socket.emit('admin_success', { message: `Successfully added ${amount} ETB to user ${targetTelegramId}. New balance: ${updatedBalance.toFixed(2)} ETB` });
+      } else {
+        socket.emit('cartela_error', { message: 'User ID not found in database!' });
+      }
+    } catch (err) {
+      console.error("Admin balance error:", err);
     }
   });
 
@@ -328,6 +375,39 @@ io.on('connection', (socket) => {
     if (socket.telegramId) delete playerSockets[socket.telegramId];
     broadcastPrizePool();
   });
+});
+
+// REST Endpoint to approve deposits via external webhooks or payment bots
+app.post('/api/approve-deposit', async (req, res) => {
+  const { telegram_id, amount } = req.body;
+
+  if (!telegram_id || !amount) {
+    return res.status(400).json({ error: "Missing telegram_id or amount" });
+  }
+
+  try {
+    const result = await pool.query(
+      'UPDATE users SET balance = balance + $1 WHERE telegram_id = $2 RETURNING balance',
+      [parseFloat(amount), telegram_id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found in database" });
+    }
+
+    const updatedBalance = parseFloat(result.rows[0].balance);
+    const targetSocketId = playerSockets[telegram_id];
+
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('balance_updated', { balance: updatedBalance });
+      io.to(targetSocketId).emit('balance_update', { balance: updatedBalance });
+    }
+
+    res.json({ success: true, telegram_id, newBalance: updatedBalance });
+  } catch (err) {
+    console.error("Deposit approval API error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 app.get('/', (req, res) => {
