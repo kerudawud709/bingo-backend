@@ -2,13 +2,29 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const { Pool } = require('pg');
+const cors = require('cors');
 
 const app = express();
+
+// Enable CORS for all HTTP routes
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
 const server = http.createServer(app);
+
+// Enable CORS for Socket.IO connection
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  allowEIO3: true
 });
 
 const port = process.env.PORT || 10000;
@@ -275,7 +291,6 @@ io.on('connection', (socket) => {
     broadcastPrizePool();
   });
 
-  // Deposit Handler - Credits player account permanently in PostgreSQL
   socket.on('process_deposit', async (data) => {
     const amount = parseFloat(data.amount);
     
@@ -302,7 +317,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Admin Controls
   socket.on('admin_start_game', () => {
     if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
     drawnNumbers = [];
