@@ -363,8 +363,16 @@
         }
 
         function announceAmharicNumber(num) {
-            const letter = num <= 15 ? 'B' : num <= 30 ? 'I' : num <= 45 ? 'N' : num <= 60 ? 'G' : 'O';
+            // Determine respective English letter according to standard 75-ball Bingo
+            let letter = 'B';
+            if (num >= 16 && num <= 30) letter = 'I';
+            else if (num >= 31 && num <= 45) letter = 'N';
+            else if (num >= 46 && num <= 60) letter = 'G';
+            else if (num >= 61 && num <= 75) letter = 'O';
+
             const amharicText = getAmharicNumberText(num);
+            
+            // Format: English Letter + Number + Amharic Translation (e.g. "B, 1, አንድ")
             const speechText = `${letter}, ${num}, ${amharicText}`;
 
             if ('speechSynthesis' in window) {
@@ -491,7 +499,7 @@
                 matchedCell.classList.add('marked');
             }
 
-            // Announce in Amharic Voice
+            // Announce in English letter + Number + Amharic Voice
             announceAmharicNumber(num);
         });
 
