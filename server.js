@@ -12,8 +12,8 @@ const io = new Server(server, {
     }
 });
 
-// Serve static assets from 'public' folder
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static assets directly from the root directory
+app.use(express.static(__dirname));
 
 // In-memory data structures
 const userBalances = new Map(); // key: telegram_id, value: number
@@ -238,9 +238,9 @@ io.on('connection', (socket) => {
     });
 });
 
-// Express v5 compatible wildcard route
+// Express v5 compatible route pointing directly to root index.html
 app.get('/{0,}', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // Start Server
