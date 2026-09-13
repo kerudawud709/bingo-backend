@@ -1,431 +1,250 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { Pool } = require('pg');
-const cors = require('cors');
 const path = require('path');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.use(express.json());
-
-// Serve static frontend files (index.html)
+// Serve static assets from 'public' folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-const server = http.createServer(app);
-
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-    credentials: true
-  },
-  transports: ["polling", "websocket"],
-  allowEIO3: true
-});
-
-const port = process.env.PORT || 10000;
-const ADMIN_TELEGRAM_ID = 5486724656;
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
-});
-
-async function initDB() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        telegram_id BIGINT PRIMARY KEY,
-        username VARCHAR(100),
-        balance NUMERIC(10, 2) DEFAULT 0.00,
-        wins INT DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS game_history (
-        id SERIAL PRIMARY KEY,
-        winner_id BIGINT,
-        prize_amount NUMERIC(10, 2),
-        won_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log("🐘 Database initialized successfully!");
-  } catch (err) {
-    console.error("❌ Database error:", err);
-  }
-}
-
-initDB();
-
-function generateBingoCard() {
-  const getRandomNumbers = (min, max, count) => {
-    const nums = new Set();
-    while (nums.size < count) {
-      nums.add(Math.floor(Math.random() * (max - min + 1)) + min);
-    }
-    return Array.from(nums);
-  };
-
-  const b = getRandomNumbers(1, 15, 5);
-  const i = getRandomNumbers(16, 30, 5);
-  const n = getRandomNumbers(31, 45, 4);
-  const g = getRandomNumbers(46, 60, 5);
-  const o = getRandomNumbers(61, 75, 5);
-
-  const card = [];
-  for (let r = 0; r < 5; r++) {
-    card.push([
-      b[r],
-      i[r],
-      r === 2 ? 0 : (r > 2 ? n[r - 1] : n[r]),
-      g[r],
-      o[r]
-    ]);
-  }
-  return card;
-}
-
-const cartelas = {};
-for (let id = 1; id <= 75; id++) {
-  cartelas[id] = generateBingoCard();
-}
-
-let takenCartelas = {}; 
-let playerSockets = {}; 
+// In-memory data structures
+const userBalances = new Map(); // key: telegram_id, value: number
+const activePlayers = new Map(); // key: socket.id, value: player object
+let availableCartelas = Array.from({ length: 75 }, (_, i) => i + 1);
 let drawnNumbers = [];
-let availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
-let gameInterval = null;
-let drawSpeed = 4000;
+let drawInterval = null;
+let currentSpeed = 4000;
 let isPaused = false;
+let prizePool = 0;
 
-function broadcastPrizePool() {
-  const activeCount = Object.keys(takenCartelas).length;
-  const currentPrize = Object.values(takenCartelas).reduce((sum, item) => sum + (item.stake || 10.00), 0);
-  io.emit('prize_pool_update', { prize: currentPrize, players: activeCount });
-}
+// Helper: Generate BINGO card numbers
+function generateBingoCard() {
+    const card = [];
+    const ranges = [
+        [1, 15],   // B
+        [16, 30],  // I
+        [31, 45],  // N
+        [46, 60],  // G
+        [61, 75]   // O
+    ];
 
-function getLetterPrefix(num) {
-  if (num <= 15) return "B " + num;
-  if (num <= 30) return "I " + num;
-  if (num <= 45) return "N " + num;
-  if (num <= 60) return "G " + num;
-  return "O " + num;
-}
-
-function isMarked(num) {
-  return num === 0 || drawnNumbers.includes(num);
-}
-
-function verifyBingo(card) {
-  let horizontalCount = 0;
-  let verticalCount = 0;
-  let diagonalCount = 0;
-
-  for (let r = 0; r < 5; r++) {
-    if (card[r].every(isMarked)) horizontalCount++;
-  }
-
-  for (let c = 0; c < 5; c++) {
-    let colComplete = true;
-    for (let r = 0; r < 5; r++) {
-      if (!isMarked(card[r][c])) {
-        colComplete = false;
-        break;
-      }
-    }
-    if (colComplete) verticalCount++;
-  }
-
-  if ([0, 1, 2, 3, 4].every(i => isMarked(card[i][i]))) diagonalCount++;
-  if ([0, 1, 2, 3, 4].every(i => isMarked(card[i][4 - i]))) diagonalCount++;
-
-  const cornersFilled = isMarked(card[0][0]) && isMarked(card[0][4]) && isMarked(card[4][0]) && isMarked(card[4][4]);
-  const totalLines = horizontalCount + verticalCount + diagonalCount;
-
-  let totalMarked = 0;
-  for (let r = 0; r < 5; r++) {
-    for (let c = 0; c < 5; c++) {
-      if (isMarked(card[r][c])) totalMarked++;
-    }
-  }
-
-  const isFullCard = totalMarked === 25;
-  const hasTwoLines = totalLines >= 2;
-  const hasLineAndCorners = cornersFilled && (horizontalCount >= 1 || verticalCount >= 1 || diagonalCount >= 1);
-
-  return { valid: hasTwoLines || hasLineAndCorners || isFullCard, fullCard: isFullCard };
-}
-
-function runDrawCycle() {
-  if (gameInterval) clearInterval(gameInterval);
-
-  gameInterval = setInterval(() => {
-    if (isPaused) return;
-
-    if (availableBalls.length === 0) {
-      clearInterval(gameInterval);
-      io.emit('game_finished');
-      return;
-    }
-
-    const randomIndex = Math.floor(Math.random() * availableBalls.length);
-    const num = availableBalls.splice(randomIndex, 1)[0];
-    drawnNumbers.push(num);
-
-    io.emit('number_drawn', {
-      number: num,
-      display: getLetterPrefix(num)
+    const columns = ranges.map(([min, max]) => {
+        const nums = new Set();
+        while (nums.size < 5) {
+            nums.add(Math.floor(Math.random() * (max - min + 1)) + min);
+        }
+        return Array.from(nums);
     });
-  }, drawSpeed);
+
+    // Format into 5x5 grid (row by row) with center as 0 (Free Space)
+    for (let r = 0; r < 5; r++) {
+        const row = [];
+        for (let c = 0; c < 5; c++) {
+            if (r === 2 && c === 2) {
+                row.push(0); // FREE SPACE
+            } else {
+                row.push(columns[c][r]);
+            }
+        }
+        card.push(row);
+    }
+    return card;
 }
 
-const getAvailableCartelas = () => Object.keys(cartelas)
-  .map(Number)
-  .filter(id => !Object.values(takenCartelas).some(item => item.number === id));
-
+// Socket Connections
 io.on('connection', (socket) => {
+    console.log(`[+] Client connected: ${socket.id}`);
 
-  socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
+    // Authenticate Telegram user
+    socket.on('authenticate', (userData) => {
+        const telegramId = userData?.id || 5486724656;
+        const username = userData?.first_name || userData?.username || `User_${telegramId}`;
 
-  socket.on('authenticate', async (userData) => {
-    try {
-      const telegramId = typeof userData === 'object' ? userData.id : userData;
-      const username = typeof userData === 'object' ? (userData.username || userData.first_name) : 'Player';
-
-      if (!telegramId) return;
-
-      const isAdmin = Number(telegramId) === ADMIN_TELEGRAM_ID;
-
-      let userRecord;
-      const res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
-      
-      if (res.rows.length === 0) {
-        const newRes = await pool.query(
-          'INSERT INTO users (telegram_id, username, balance) VALUES ($1, $2, $3) RETURNING *',
-          [telegramId, username, 0.00]
-        );
-        userRecord = newRes.rows[0];
-        console.log(`👤 New player registered: ${username} (${telegramId})`);
-      } else {
-        const updateRes = await pool.query(
-          'UPDATE users SET username = $1 WHERE telegram_id = $2 RETURNING *',
-          [username, telegramId]
-        );
-        userRecord = updateRes.rows[0];
-      }
-
-      playerSockets[telegramId] = socket.id;
-      socket.telegramId = telegramId;
-      
-      socket.emit('account_data', { 
-        ...userRecord, 
-        balance: parseFloat(userRecord.balance), 
-        isAdmin 
-      });
-      socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
-      broadcastPrizePool();
-    } catch (err) {
-      console.error("❌ Auth error:", err);
-    }
-  });
-
-  socket.on('select_cartela', async (data) => {
-    let number;
-    let stake = 10.00;
-
-    if (typeof data === 'object' && data !== null) {
-      number = Number(data.number);
-      stake = parseFloat(data.stake) || 10.00;
-    } else {
-      number = Number(data);
-    }
-
-    if (isNaN(number) || number < 1 || number > 75) {
-      socket.emit('cartela_error', { message: 'Invalid cartela selection!' });
-      return;
-    }
-
-    if (stake < 5.00) {
-      socket.emit('cartela_error', { message: 'Minimum stake is 5 ETB!' });
-      return;
-    }
-
-    const isTaken = Object.values(takenCartelas).some(item => item.number === number);
-    if (isTaken) {
-      socket.emit('cartela_error', { message: 'Cartela already taken!' });
-      return;
-    }
-
-    if (socket.telegramId) {
-      try {
-        const userRes = await pool.query('SELECT balance FROM users WHERE telegram_id = $1', [socket.telegramId]);
-        const currentBalance = parseFloat(userRes.rows[0]?.balance || 0);
-
-        if (currentBalance < stake) {
-          socket.emit('cartela_error', { message: `Insufficient balance! Your balance: ${currentBalance.toFixed(2)} ETB` });
-          return;
+        // Default initial balance if new
+        if (!userBalances.has(telegramId)) {
+            userBalances.set(telegramId, 100.00); 
         }
 
-        const updatedUser = await pool.query(
-          'UPDATE users SET balance = balance - $1 WHERE telegram_id = $2 RETURNING balance',
-          [stake, socket.telegramId]
-        );
+        const balance = userBalances.get(telegramId);
+        const isAdmin = String(telegramId) === "5486724656";
 
-        const newBalance = parseFloat(updatedUser.rows[0].balance);
+        socket.userData = { telegramId, username, isAdmin };
+
+        socket.emit('account_data', {
+            telegram_id: telegramId,
+            username: username,
+            balance: balance,
+            isAdmin: isAdmin
+        });
+
+        // Send current available cartelas
+        socket.emit('cartela_list', { cartelas: availableCartelas });
+    });
+
+    // Request Cartela List
+    socket.on('request_cartelas', () => {
+        socket.emit('cartela_list', { cartelas: availableCartelas });
+    });
+
+    // Select Cartela
+    socket.on('select_cartela', (data) => {
+        const { number, stake } = data;
+        const stakeAmount = parseFloat(stake) || 10;
+
+        if (!socket.userData) {
+            return socket.emit('cartela_error', { message: 'Authentication required.' });
+        }
+
+        const currentBalance = userBalances.get(socket.userData.telegramId) || 0;
+
+        if (stakeAmount < 5) {
+            return socket.emit('cartela_error', { message: 'Minimum stake is 5 ETB.' });
+        }
+
+        if (currentBalance < stakeAmount) {
+            return socket.emit('cartela_error', { message: 'Insufficient balance.' });
+        }
+
+        if (!availableCartelas.includes(number)) {
+            return socket.emit('cartela_error', { message: 'Cartela already taken or invalid.' });
+        }
+
+        // Deduct balance and confirm cartela
+        const newBalance = currentBalance - stakeAmount;
+        userBalances.set(socket.userData.telegramId, newBalance);
+        
+        // Remove cartela from pool
+        availableCartelas = availableCartelas.filter(c => c !== number);
+        prizePool += stakeAmount * 0.85; // 85% goes to prize pool
+
+        const cardMatrix = generateBingoCard();
+
+        activePlayers.set(socket.id, {
+            telegramId: socket.userData.telegramId,
+            username: socket.userData.username,
+            cartelaNumber: number,
+            card: cardMatrix,
+            stake: stakeAmount
+        });
+
         socket.emit('balance_updated', { balance: newBalance });
-        socket.emit('balance_update', { balance: newBalance });
-      } catch (err) {
-        console.error("Deduction error:", err);
-        socket.emit('cartela_error', { message: 'Database error processing stake!' });
-        return;
-      }
-    }
+        socket.emit('cartela_selected', { number: number, card: cardMatrix });
+        io.emit('cartela_availability', { available: availableCartelas });
+        io.emit('prize_pool_update', { prize: prizePool });
+    });
 
-    takenCartelas[socket.id] = { number, stake, userId: socket.telegramId };
-    socket.emit('cartela_selected', { number: number, card: cartelas[number], stake: stake });
-    io.emit('cartela_availability', { available: getAvailableCartelas() });
-    broadcastPrizePool();
-  });
+    // Admin Controls
+    socket.on('admin_start_game', () => {
+        if (!socket.userData?.isAdmin) return;
+        
+        if (drawInterval) clearInterval(drawInterval);
+        drawnNumbers = [];
+        isPaused = false;
 
-  socket.on('process_deposit', async (data) => {
-    const amount = parseFloat(data.amount);
-    
-    if (isNaN(amount) || amount <= 0) {
-      socket.emit('cartela_error', { message: 'Invalid deposit amount!' });
-      return;
-    }
+        io.emit('game_started');
 
-    if (socket.telegramId) {
-      try {
-        const updatedUser = await pool.query(
-          'UPDATE users SET balance = balance + $1 WHERE telegram_id = $2 RETURNING balance',
-          [amount, socket.telegramId]
-        );
+        drawInterval = setInterval(() => {
+            if (isPaused) return;
 
-        const newBalance = parseFloat(updatedUser.rows[0].balance);
-        socket.emit('balance_updated', { balance: newBalance });
-        socket.emit('balance_update', { balance: newBalance });
-        socket.emit('admin_success', { message: `Successfully deposited ${amount.toFixed(2)} ETB!` });
-      } catch (err) {
-        console.error("Deposit processing error:", err);
-        socket.emit('cartela_error', { message: 'Failed to process deposit in database.' });
-      }
-    }
-  });
+            if (drawnNumbers.length >= 75) {
+                clearInterval(drawInterval);
+                drawInterval = null;
+                io.emit('game_finished');
+                return;
+            }
 
-  socket.on('admin_start_game', () => {
-    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
-    drawnNumbers = [];
-    availableBalls = Array.from({ length: 75 }, (_, k) => k + 1);
-    isPaused = false;
-    io.emit('game_started');
-    runDrawCycle();
-    socket.emit('admin_success', { message: 'Game Started!' });
-  });
+            let nextNum;
+            do {
+                nextNum = Math.floor(Math.random() * 75) + 1;
+            } while (drawnNumbers.includes(nextNum));
 
-  socket.on('admin_toggle_pause', () => {
-    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
-    isPaused = !isPaused;
-    io.emit('game_pause_status', { isPaused });
-  });
+            drawnNumbers.push(nextNum);
+            io.emit('number_drawn', { number: nextNum });
+        }, currentSpeed);
 
-  socket.on('admin_set_speed', (speedInMs) => {
-    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
-    drawSpeed = Number(speedInMs);
-    if (gameInterval && !isPaused) {
-      runDrawCycle();
-    }
-  });
+        socket.emit('admin_success', { message: '🚀 Game Started!' });
+    });
 
-  socket.on('admin_add_balance', async (data) => {
-    if (Number(socket.telegramId) !== ADMIN_TELEGRAM_ID) return;
-    const { targetTelegramId, amount } = data;
+    socket.on('admin_toggle_pause', () => {
+        if (!socket.userData?.isAdmin) return;
+        isPaused = !isPaused;
+        io.emit('game_pause_status', { isPaused });
+    });
 
-    try {
-      const res = await pool.query(
-        'UPDATE users SET balance = balance + $1 WHERE telegram_id = $2 RETURNING balance',
-        [parseFloat(amount), targetTelegramId]
-      );
+    socket.on('admin_set_speed', (speedMs) => {
+        if (!socket.userData?.isAdmin) return;
+        currentSpeed = parseInt(speedMs) || 4000;
+        if (drawInterval) {
+            clearInterval(drawInterval);
+            socket.emit('admin_start_game');
+        }
+    });
 
-      if (res.rows.length > 0) {
-        const updatedBalance = parseFloat(res.rows[0].balance);
-        const targetSocketId = playerSockets[targetTelegramId];
+    socket.on('admin_add_balance', (data) => {
+        if (!socket.userData?.isAdmin) return;
+        const { targetTelegramId, amount } = data;
+        const current = userBalances.get(Number(targetTelegramId)) || 0;
+        const updated = current + parseFloat(amount);
+        
+        userBalances.set(Number(targetTelegramId), updated);
 
-        if (targetSocketId) {
-          io.to(targetSocketId).emit('balance_updated', { balance: updatedBalance });
-          io.to(targetSocketId).emit('balance_update', { balance: updatedBalance });
+        // Notify target if online
+        for (let [id, playerSocket] of io.sockets.sockets) {
+            if (playerSocket.userData?.telegramId === Number(targetTelegramId)) {
+                playerSocket.emit('balance_updated', { balance: updated });
+            }
         }
 
-        socket.emit('admin_success', { message: `Added ${amount} ETB to user ${targetTelegramId}. New balance: ${updatedBalance.toFixed(2)} ETB` });
-      } else {
-        socket.emit('cartela_error', { message: 'User ID not found in database!' });
-      }
-    } catch (err) {
-      console.error("Admin balance error:", err);
-    }
-  });
+        socket.emit('admin_success', { message: `Added ${amount} ETB to User ${targetTelegramId}` });
+    });
 
-  socket.on('claim_bingo', async () => {
-    const playerSelection = takenCartelas[socket.id];
-    if (!playerSelection) {
-      socket.emit('false_alarm', { message: 'You have not selected a cartela!' });
-      return;
-    }
+    // Claim Bingo
+    socket.on('claim_bingo', () => {
+        const player = activePlayers.get(socket.id);
+        if (!player) return;
 
-    const playerCard = cartelas[playerSelection.number];
-    const result = verifyBingo(playerCard);
+        // Reset game state
+        if (drawInterval) clearInterval(drawInterval);
+        drawInterval = null;
 
-    if (result.valid) {
-      if (gameInterval) clearInterval(gameInterval);
+        const currentBal = userBalances.get(player.telegramId) || 0;
+        const newBal = currentBal + prizePool;
+        userBalances.set(player.telegramId, newBal);
 
-      const prizePool = Object.values(takenCartelas).reduce((sum, item) => sum + (item.stake || 10.00), 0);
+        io.emit('game_over', {
+            winner: socket.id,
+            winnerName: player.username,
+            prize: prizePool
+        });
 
-      if (socket.telegramId) {
-        try {
-          await pool.query('UPDATE users SET balance = balance + $1, wins = wins + 1 WHERE telegram_id = $2', [socket.telegramId, prizePool]);
-          await pool.query('INSERT INTO game_history (winner_id, prize_amount) VALUES ($1, $2)', [socket.telegramId, prizePool]);
-        } catch (err) {
-          console.error("Prize payout error:", err);
-        }
-      }
+        // Reset game variables for next round
+        prizePool = 0;
+        availableCartelas = Array.from({ length: 75 }, (_, i) => i + 1);
+        activePlayers.clear();
+        io.emit('prize_pool_update', { prize: 0 });
+    });
 
-      io.emit('game_over', { winner: socket.id, prize: prizePool, fullCard: result.fullCard });
-    } else {
-      socket.emit('false_alarm', { 
-        message: 'False Bingo! Rules:\n- 2 complete lines\n- 1 line + 4 corners\n- Full cartela' 
-      });
-    }
-  });
-
-  socket.on('request_cartelas', () => {
-    delete takenCartelas[socket.id];
-    socket.emit('cartela_list', { cartelas: getAvailableCartelas() });
-    broadcastPrizePool();
-  });
-
-  socket.on('disconnect', () => {
-    delete takenCartelas[socket.id];
-    if (socket.telegramId) delete playerSockets[socket.telegramId];
-    broadcastPrizePool();
-  });
+    socket.on('disconnect', () => {
+        console.log(`[-] Client disconnected: ${socket.id}`);
+        activePlayers.delete(socket.id);
+    });
 });
 
-app.get('/api/status', (req, res) => {
-  res.json({ status: "online", activePlayers: Object.keys(takenCartelas).length });
+// Safe Catch-all Route for Express (Render Compatible)
+app.get('(.*)', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Fallback to index.html for single-page app routes
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-server.listen(port, () => {
-  console.log(`🚀 Server listening on port ${port}`);
+// Start Server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`[+] Yeketema Bingo Server running on port ${PORT}`);
 });
