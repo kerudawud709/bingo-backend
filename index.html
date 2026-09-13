@@ -335,7 +335,8 @@
         }
 
         // Direct server connection targeting host origin
-        const socket = io(window.location.origin, {
+        
+const socket = io("https://bingo-backend-7rt0.onrender.com", {
             transports: ['websocket', 'polling'],
             reconnection: true,
             reconnectionAttempts: 10,
