@@ -3,10 +3,10 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { Pool } = require('pg');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 
-// Enable CORS for all HTTP routes
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST'],
@@ -15,9 +15,11 @@ app.use(cors({
 
 app.use(express.json());
 
+// Serve static frontend files (index.html)
+app.use(express.static(path.join(__dirname, 'public')));
+
 const server = http.createServer(app);
 
-// Enable CORS for Socket.IO connection
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -415,40 +417,13 @@ io.on('connection', (socket) => {
   });
 });
 
-app.post('/api/approve-deposit', async (req, res) => {
-  const { telegram_id, amount } = req.body;
-
-  if (!telegram_id || !amount) {
-    return res.status(400).json({ error: "Missing telegram_id or amount" });
-  }
-
-  try {
-    const result = await pool.query(
-      'UPDATE users SET balance = balance + $1 WHERE telegram_id = $2 RETURNING balance',
-      [parseFloat(amount), telegram_id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "User not found in database" });
-    }
-
-    const updatedBalance = parseFloat(result.rows[0].balance);
-    const targetSocketId = playerSockets[telegram_id];
-
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('balance_updated', { balance: updatedBalance });
-      io.to(targetSocketId).emit('balance_update', { balance: updatedBalance });
-    }
-
-    res.json({ success: true, telegram_id, newBalance: updatedBalance });
-  } catch (err) {
-    console.error("Deposit approval API error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
+app.get('/api/status', (req, res) => {
+  res.json({ status: "online", activePlayers: Object.keys(takenCartelas).length });
 });
 
-app.get('/', (req, res) => {
-  res.json({ status: "online", activePlayers: Object.keys(takenCartelas).length });
+// Fallback to index.html for single-page app routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 server.listen(port, () => {
