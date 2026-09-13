@@ -8,8 +8,11 @@ const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
         origin: "*",
-        methods: ["GET", "POST"]
-    }
+        methods: ["GET", "POST"],
+        allowedHeaders: ["*"],
+        credentials: true
+    },
+    transports: ['polling', 'websocket']
 });
 
 // Serve static assets directly from the root directory
