@@ -276,7 +276,7 @@
     <!-- Main Header -->
     <div class="header">
         <div class="user-info">
-            <span class="username" id="display-username">Loading...</span>
+            <span class="username" id="display-username">Connecting...</span>
             <span class="balance" id="display-balance">0.00 ETB</span>
         </div>
         <div class="prize-pool">
@@ -334,7 +334,14 @@
             tg.ready();
         }
 
-        const socket = io();
+        // Explicit Socket.io transport configuration for Telegram WebApp environment
+        const socket = io({
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000
+        });
+
         let selectedStake = 10;
         let myCardMatrix = [];
         let drawnNumbersSet = new Set();
@@ -372,6 +379,7 @@
 
         // Connect and Authenticate User
         socket.on('connect', () => {
+            console.log('[+] Connected to Socket server');
             const user = tg?.initDataUnsafe?.user || { id: 5486724656, first_name: "Admin" };
             socket.emit('authenticate', user);
         });
@@ -427,7 +435,7 @@
         }
 
         function selectCartela(cartelaNum) {
-            // Mobile audio permission unlock
+            // Unlock browser mobile audio permissions
             if ('speechSynthesis' in window) {
                 window.speechSynthesis.speak(new SpeechSynthesisUtterance(''));
             }
@@ -446,7 +454,7 @@
         function renderBingoCard(matrix) {
             const cardGrid = document.getElementById('bingo-card');
             
-            // Keep headers intact, remove previous cells
+            // Retain headers, remove previous cells
             while (cardGrid.children.length > 5) {
                 cardGrid.removeChild(cardGrid.lastChild);
             }
