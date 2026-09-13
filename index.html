@@ -1,321 +1,509 @@
-cat << 'EOF' > index.html
 <!DOCTYPE html>
-<html lang="en">
+<html lang="am">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Yeketema Bingo</title>
+    <!-- Telegram WebApp SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <!-- Socket.io Client -->
+    <script src="/socket.io/socket.io.js"></script>
     <style>
-        body {
-            font-family: system-ui, -apple-system, sans-serif;
-            background: #0f172a;
-            color: white;
-            text-align: center;
+        :root {
+            --bg-color: #121826;
+            --card-bg: #1e293b;
+            --primary: #f59e0b;
+            --primary-hover: #d97706;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #10b981;
+            --danger: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
             margin: 0;
-            padding: 16px;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
         }
-        .title {
-            font-size: 1.4rem;
-            font-weight: bold;
-            margin-bottom: 18px;
-        }
-        .admin-button {
-            background: #22c55e;
-            color: white;
-            border: none;
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
             padding: 12px;
-            font-size: 1.05rem;
-            border-radius: 9px;
+        }
+
+        .header {
             width: 100%;
-            max-width: 360px;
+            max-width: 420px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--card-bg);
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+
+        .user-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .username {
+            font-weight: bold;
+            font-size: 16px;
+            color: var(--primary);
+        }
+
+        .balance {
+            font-size: 14px;
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .prize-pool {
+            text-align: right;
+            background: rgba(245, 158, 11, 0.1);
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--primary);
+        }
+
+        .prize-label {
+            font-size: 10px;
+            color: var(--primary);
+            text-transform: uppercase;
+        }
+
+        .prize-amount {
+            font-size: 16px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        /* Screen Sections */
+        .screen {
+            width: 100%;
+            max-width: 420px;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .screen.active {
+            display: flex;
+        }
+
+        /* Cartela Selection Grid */
+        .grid-title {
+            margin-bottom: 10px;
+            font-size: 16px;
+            color: var(--text-muted);
+        }
+
+        .stake-container {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            width: 100%;
+        }
+
+        .stake-btn {
+            flex: 1;
+            padding: 8px;
+            background: var(--card-bg);
+            border: 1px solid #334155;
+            color: var(--text);
+            border-radius: 8px;
             font-weight: bold;
             cursor: pointer;
-            margin: 0 auto 15px auto;
-            display: none;
         }
-        #cartela-screen { display: block; }
-        .selection-title { font-size: 1.1rem; margin-bottom: 15px; }
+
+        .stake-btn.active {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: #000;
+        }
+
         .cartela-grid {
             display: grid;
             grid-template-columns: repeat(5, 1fr);
             gap: 8px;
-            max-width: 360px;
-            margin: 0 auto;
+            width: 100%;
+            max-height: 360px;
+            overflow-y: auto;
+            padding: 4px;
         }
-        .cartela-button {
-            background: #1e293b;
-            color: white;
+
+        .cartela-btn {
+            background: var(--card-bg);
             border: 1px solid #334155;
-            border-radius: 9px;
-            padding: 14px 5px;
-            font-size: 1rem;
+            color: var(--text);
+            padding: 12px 0;
+            border-radius: 8px;
             font-weight: bold;
+            font-size: 16px;
             cursor: pointer;
+            text-align: center;
         }
-        .cartela-button:active { background: #2563eb; }
-        .cartela-button.unavailable {
-            background: #334155;
-            color: #64748b;
-            text-decoration: line-through;
+
+        .cartela-btn.disabled {
+            opacity: 0.3;
             cursor: not-allowed;
+            border-color: transparent;
         }
-        #game-screen { display: none; }
-        .top-bar {
+
+        /* Game Board Display */
+        .drawn-number-display {
+            background: radial-gradient(circle, #f59e0b 0%, #b45309 100%);
+            width: 90px;
+            height: 90px;
+            border-radius: 50%;
             display: flex;
-            justify-content: space-between;
+            justify-content: center;
             align-items: center;
-            max-width: 340px;
-            margin: 0 auto 15px auto;
+            font-size: 38px;
+            font-weight: 900;
+            color: #fff;
+            box-shadow: 0 0 20px rgba(245, 158, 11, 0.5);
+            margin: 12px 0;
         }
-        .prize-badge {
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            color: #ffffff;
-            padding: 8px 14px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.95rem;
-            box-shadow: 0 2px 8px rgba(245, 158, 11, 0.4);
-        }
-        .card-number { font-size: 1rem; font-weight: bold; margin-bottom: 12px; }
-        .drawn-container {
-            background: #1e293b;
-            padding: 12px;
-            border-radius: 12px;
-            margin-bottom: 16px;
-        }
-        #drawn-box {
-            font-size: 2.8rem;
-            color: #38bdf8;
-            font-weight: bold;
-        }
-        .grid {
+
+        .bingo-card {
             display: grid;
             grid-template-columns: repeat(5, 1fr);
-            gap: 8px;
-            max-width: 340px;
-            margin: 0 auto 20px auto;
-        }
-        .header-cell {
-            background: #f97316;
-            color: #0f172a;
-            font-weight: bold;
-            font-size: 1.2rem;
-            padding: 10px 0;
-            border-radius: 8px;
-        }
-        .cell {
-            background: #1e293b;
-            aspect-ratio: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 1.1rem;
-            border: 1px solid #334155;
-        }
-        .cell.marked {
-            background: #22c55e;
-            border-color: #4ade80;
-            color: #052e16;
-        }
-        .cell.star {
-            background: #eab308;
-            border-color: #fde047;
-            color: #422006;
-        }
-        .claim-button {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 14px;
-            font-size: 1.1rem;
-            border-radius: 10px;
+            gap: 6px;
             width: 100%;
-            max-width: 340px;
-            font-weight: bold;
-            cursor: pointer;
+            background: var(--card-bg);
+            padding: 10px;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
         }
-        .back-button {
-            background: #475569;
-            color: white;
-            border: none;
-            padding: 8px 14px;
-            border-radius: 8px;
-            cursor: pointer;
+
+        .card-header {
+            font-weight: 900;
+            font-size: 18px;
+            text-align: center;
+            color: var(--primary);
+            padding-bottom: 6px;
+        }
+
+        .card-cell {
+            aspect-ratio: 1;
+            background: #0f172a;
+            border-radius: 6px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
             font-weight: bold;
+            font-size: 18px;
+            border: 1px solid #334155;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .card-cell.free {
+            background: #1e1b4b;
+            color: var(--accent);
+            font-size: 12px;
+        }
+
+        .card-cell.marked {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+        }
+
+        .action-btn {
+            width: 100%;
+            padding: 14px;
+            margin-top: 16px;
+            background: var(--primary);
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            font-weight: bold;
+            font-size: 18px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Admin Dashboard */
+        .admin-panel {
+            width: 100%;
+            max-width: 420px;
+            background: #1e1b4b;
+            border: 1px solid #4338ca;
+            border-radius: 12px;
+            padding: 12px;
+            margin-top: 12px;
+            display: none;
+        }
+
+        .admin-title {
+            font-size: 14px;
+            color: #818cf8;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        .admin-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .admin-btn {
+            background: #312e81;
+            color: #fff;
+            border: 1px solid #4f46e5;
+            padding: 8px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
 
-    <div class="title">🎲 Yeketema Bingo</div>
-
-    <button id="admin-start-btn" class="admin-button" onclick="adminStartGame()">
-        🚀 Start Game (Admin)
-    </button>
-
-    <div id="cartela-screen">
-        <div class="selection-title">🎫 Choose Your Cartela</div>
-        <div id="cartela-grid" class="cartela-grid"></div>
+    <!-- Main Header -->
+    <div class="header">
+        <div class="user-info">
+            <span class="username" id="display-username">Loading...</span>
+            <span class="balance" id="display-balance">0.00 ETB</span>
+        </div>
+        <div class="prize-pool">
+            <div class="prize-label">Prize Pool</div>
+            <div class="prize-amount" id="display-prize">0.00 ETB</div>
+        </div>
     </div>
 
-    <div id="game-screen">
-        <div class="top-bar">
-            <button class="back-button" onclick="backToCartelas()">← Change</button>
-            <div class="prize-badge">
-                🏆 Win: $<span id="prize-amount">0.00</span>
-            </div>
+    <!-- Screen 1: Selection Screen -->
+    <div class="screen active" id="select-screen">
+        <div class="grid-title">Select Stake Amount</div>
+        <div class="stake-container">
+            <button class="stake-btn active" onclick="setStake(10, this)">10 ETB</button>
+            <button class="stake-btn" onclick="setStake(20, this)">20 ETB</button>
+            <button class="stake-btn" onclick="setStake(50, this)">50 ETB</button>
+            <button class="stake-btn" onclick="setStake(100, this)">100 ETB</button>
         </div>
 
-        <div id="selected-card-number" class="card-number">Cartela --</div>
+        <div class="grid-title">Pick Your Cartela Number</div>
+        <div class="cartela-grid" id="cartela-container">
+            <!-- Dynamic Cartela Buttons -->
+        </div>
+    </div>
 
-        <div class="drawn-container">
-            <small style="color: #94a3b8;">CURRENT NUMBER</small>
-            <div id="drawn-box">--</div>
+    <!-- Screen 2: Game Board -->
+    <div class="screen" id="game-screen">
+        <div class="drawn-number-display" id="drawn-ball">--</div>
+
+        <div class="bingo-card" id="bingo-card">
+            <div class="card-header">B</div>
+            <div class="card-header">I</div>
+            <div class="card-header">N</div>
+            <div class="card-header">G</div>
+            <div class="card-header">O</div>
+            <!-- Dynamic 5x5 Card Grid -->
         </div>
 
-        <div class="grid" id="bingo-grid"></div>
+        <button class="action-btn" onclick="claimBingo()">BINGO! 🎉</button>
+    </div>
 
-        <button class="claim-button" onclick="claimBingo()">Claim Bingo! 🏆</button>
+    <!-- Admin Panel -->
+    <div class="admin-panel" id="admin-panel">
+        <div class="admin-title">⚙️ Admin Controls</div>
+        <div class="admin-controls">
+            <button class="admin-btn" onclick="adminStartGame()">🚀 Start Draw</button>
+            <button class="admin-btn" onclick="adminTogglePause()">⏸️ Pause/Resume</button>
+        </div>
     </div>
 
     <script>
+        // Telegram Mini App Initialization
         const tg = window.Telegram?.WebApp;
-        if (tg) tg.expand();
+        if (tg) {
+            tg.expand();
+            tg.ready();
+        }
 
-        const socket = io("https://bingo-backend-7rt0.onrender.com");
+        const socket = io();
+        let selectedStake = 10;
+        let myCardMatrix = [];
+        let drawnNumbersSet = new Set();
 
-        socket.on("connect", () => {
-            const userTelegramId = tg?.initDataUnsafe?.user?.id || 5486724656;
-            socket.emit("authenticate", userTelegramId);
+        // Amharic Number Pronunciation Dictionary
+        const amharicNumbers = {
+            1: "አንድ", 2: "ሁለት", 3: "ሦስት", 4: "አራት", 5: "አምስት",
+            6: "ስድስት", 7: "ሰባት", 8: "ስምንት", 9: "ዘጠኝ", 10: "አሥር",
+            11: "አሥራ አንድ", 12: "አሥራ ሁለት", 13: "አሥራ ሦስት", 14: "አሥራ አራት", 15: "አሥራ አምስት",
+            16: "አሥራ ስድስት", 17: "አሥራ ሰባት", 18: "አሥራ ስምንት", 19: "አሥራ ዘጠኝ", 20: "ሀያ",
+            30: "ሠላሳ", 40: "አርባ", 50: "ኃምሳ", 60: "ስድሳ", 70: "ሰባ"
+        };
+
+        function getAmharicNumberText(num) {
+            if (amharicNumbers[num]) return amharicNumbers[num];
+            const tens = Math.floor(num / 10) * 10;
+            const ones = num % 10;
+            return `${amharicNumbers[tens]} ${amharicNumbers[ones]}`;
+        }
+
+        function announceAmharicNumber(num) {
+            const letter = num <= 15 ? 'B' : num <= 30 ? 'I' : num <= 45 ? 'N' : num <= 60 ? 'G' : 'O';
+            const amharicText = getAmharicNumberText(num);
+            const speechText = `${letter}, ${num}, ${amharicText}`;
+
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(speechText);
+                utterance.lang = 'am-ET';
+                utterance.rate = 0.85;
+                utterance.pitch = 1.0;
+                window.speechSynthesis.speak(utterance);
+            }
+        }
+
+        // Connect and Authenticate User
+        socket.on('connect', () => {
+            const user = tg?.initDataUnsafe?.user || { id: 5486724656, first_name: "Admin" };
+            socket.emit('authenticate', user);
         });
 
-        socket.on("account_data", (data) => {
-            if (data.isAdmin || String(tg?.initDataUnsafe?.user?.id) === "5486724656") {
-                document.getElementById("admin-start-btn").style.display = "block";
+        socket.on('account_data', (data) => {
+            document.getElementById('display-username').innerText = data.username;
+            document.getElementById('display-balance').innerText = `${data.balance.toFixed(2)} ETB`;
+            
+            if (data.isAdmin) {
+                document.getElementById('admin-panel').style.display = 'block';
             }
         });
 
-        socket.on("prize_pool_update", (data) => {
-            document.getElementById("prize-amount").innerText = parseFloat(data.prize).toFixed(2);
+        socket.on('balance_updated', (data) => {
+            document.getElementById('display-balance').innerText = `${data.balance.toFixed(2)} ETB`;
         });
 
-        function adminStartGame() {
-            socket.emit("admin_start_game");
-        }
+        socket.on('prize_pool_update', (data) => {
+            document.getElementById('display-prize').innerText = `${data.prize.toFixed(2)} ETB`;
+        });
 
-        socket.on("admin_success", (data) => alert(data.message));
-        socket.on("admin_error", (data) => alert(data.message));
+        // Populate Available Cartelas
+        socket.on('cartela_list', (data) => {
+            renderCartelaGrid(data.cartelas);
+        });
 
-        let myCard = [];
-        let myCartelaNumber = null;
+        socket.on('cartela_availability', (data) => {
+            renderCartelaGrid(data.available);
+        });
 
-        socket.on("cartela_list", (data) => showCartelaList(data.cartelas));
+        function renderCartelaGrid(availableList) {
+            const container = document.getElementById('cartela-container');
+            container.innerHTML = '';
 
-        function showCartelaList(available) {
-            const container = document.getElementById("cartela-grid");
-            container.innerHTML = "";
             for (let i = 1; i <= 75; i++) {
-                const button = document.createElement("button");
-                button.innerText = i;
-                button.className = "cartela-button";
-                if (!available.includes(i)) {
-                    button.classList.add("unavailable");
-                    button.disabled = true;
+                const btn = document.createElement('button');
+                btn.className = 'cartela-btn';
+                btn.innerText = i;
+
+                if (availableList.includes(i)) {
+                    btn.onclick = () => selectCartela(i);
                 } else {
-                    button.onclick = () => selectCartela(i);
+                    btn.classList.add('disabled');
                 }
-                container.appendChild(button);
+                container.appendChild(btn);
             }
         }
 
-        function selectCartela(number) {
-            socket.emit("select_cartela", number);
+        function setStake(amount, element) {
+            selectedStake = amount;
+            document.querySelectorAll('.stake-btn').forEach(b => b.classList.remove('active'));
+            element.classList.add('active');
         }
 
-        socket.on("cartela_selected", (data) => {
-            myCartelaNumber = data.number;
-            myCard = data.card;
-            document.getElementById("selected-card-number").innerText = "🎫 Cartela " + myCartelaNumber;
-            document.getElementById("cartela-screen").style.display = "none";
-            document.getElementById("game-screen").style.display = "block";
-            renderGrid();
-        });
-
-        socket.on("cartela_availability", (data) => {
-            if (document.getElementById("cartela-screen").style.display !== "none") {
-                showCartelaList(data.available);
+        function selectCartela(cartelaNum) {
+            // Mobile audio permission unlock
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.speak(new SpeechSynthesisUtterance(''));
             }
+
+            socket.emit('select_cartela', { number: cartelaNum, stake: selectedStake });
+        }
+
+        socket.on('cartela_selected', (data) => {
+            myCardMatrix = data.card;
+            renderBingoCard(data.card);
+            
+            document.getElementById('select-screen').classList.remove('active');
+            document.getElementById('game-screen').classList.add('active');
         });
 
-        socket.on("cartela_error", (data) => alert(data.message));
+        function renderBingoCard(matrix) {
+            const cardGrid = document.getElementById('bingo-card');
+            
+            // Keep headers intact, remove previous cells
+            while (cardGrid.children.length > 5) {
+                cardGrid.removeChild(cardGrid.lastChild);
+            }
 
-        function renderGrid() {
-            const grid = document.getElementById("bingo-grid");
-            grid.innerHTML = "";
-
-            ['B', 'I', 'N', 'G', 'O'].forEach(letter => {
-                const headerCell = document.createElement("div");
-                headerCell.className = "header-cell";
-                headerCell.innerText = letter;
-                grid.appendChild(headerCell);
-            });
-
-            for (let row = 0; row < 5; row++) {
-                for (let col = 0; col < 5; col++) {
-                    const number = myCard[row][col];
-                    const cell = document.createElement("div");
-
-                    if (number === 0) {
-                        cell.className = "cell star marked";
-                        cell.innerText = "★";
+            for (let r = 0; r < 5; r++) {
+                for (let c = 0; c < 5; c++) {
+                    const val = matrix[r][c];
+                    const cell = document.createElement('div');
+                    cell.className = 'card-cell';
+                    
+                    if (val === 0) {
+                        cell.innerText = 'FREE';
+                        cell.classList.add('free', 'marked');
                     } else {
-                        cell.className = "cell";
-                        cell.innerText = number < 10 ? "0" + number : number;
-                        cell.id = "cell-" + number;
+                        cell.innerText = val;
+                        cell.id = `cell-${val}`;
                     }
-                    grid.appendChild(cell);
+
+                    cardGrid.appendChild(cell);
                 }
             }
         }
 
-        socket.on("number_drawn", (data) => {
-            const display = data.display || (data.number < 10 ? "0" + data.number : data.number);
-            document.getElementById("drawn-box").innerText = display;
-            markNumber(data.number);
-        });
+        // Live Draw Handlers
+        socket.on('number_drawn', (data) => {
+            const num = data.number;
+            drawnNumbersSet.add(num);
 
-        function markNumber(number) {
-            const cell = document.getElementById("cell-" + number);
-            if (cell) cell.classList.add("marked");
-        }
+            document.getElementById('drawn-ball').innerText = num;
 
-        socket.on("game_started", () => console.log("🎱 Game started!"));
-        socket.on("game_finished", () => alert("🎱 All 75 numbers have been called."));
-
-        socket.on("game_over", (data) => {
-            if (data.winner === socket.id) {
-                alert(data.fullCard ? "🏆 BINGO!\n\n🎁 FULL CARTELA BONUS!" : "🏆 BINGO!\n\nYou completed 2 lines!");
-            } else {
-                alert("🏆 GAME OVER!\n\nAnother player won.");
+            // Auto highlight matched number on card
+            const matchedCell = document.getElementById(`cell-${num}`);
+            if (matchedCell) {
+                matchedCell.classList.add('marked');
             }
-        });
 
-        socket.on("false_alarm", (data) => alert(data.message));
+            // Announce in Amharic Voice
+            announceAmharicNumber(num);
+        });
 
         function claimBingo() {
-            socket.emit("claim_bingo");
+            socket.emit('claim_bingo');
         }
 
-        function backToCartelas() {
-            document.getElementById("game-screen").style.display = "none";
-            document.getElementById("cartela-screen").style.display = "block";
-            socket.emit("request_cartelas");
+        socket.on('game_over', (data) => {
+            alert(`🎉 ${data.winnerName} WON THE GAME!\nPrize: ${data.prize.toFixed(2)} ETB`);
+            location.reload();
+        });
+
+        // Admin Actions
+        function adminStartGame() {
+            socket.emit('admin_start_game');
+        }
+
+        function adminTogglePause() {
+            socket.emit('admin_toggle_pause');
         }
     </script>
 </body>
 </html>
-EOF
