@@ -6,8 +6,8 @@
     <title>Yeketema Bingo</title>
     <!-- Telegram WebApp SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <!-- Socket.io Client -->
-    <script src="/socket.io/socket.io.js"></script>
+    <!-- CDN Socket.io Client to work reliably in Telegram WebApp wrapper -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
         :root {
             --bg-color: #121826;
@@ -334,8 +334,8 @@
             tg.ready();
         }
 
-        // Explicit Socket.io transport configuration for Telegram WebApp environment
-        const socket = io({
+        // Direct server connection targeting host origin
+        const socket = io(window.location.origin, {
             transports: ['websocket', 'polling'],
             reconnection: true,
             reconnectionAttempts: 10,
