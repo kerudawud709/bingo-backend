@@ -238,8 +238,8 @@ io.on('connection', (socket) => {
     });
 });
 
-// Safe Catch-all Route for Express (Render Compatible)
-app.get('(.*)', (req, res) => {
+// Express v5 compatible wildcard route
+app.get('/{0,}', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
